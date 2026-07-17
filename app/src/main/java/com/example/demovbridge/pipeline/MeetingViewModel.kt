@@ -35,9 +35,13 @@ class MeetingViewModel(
     private val assets = context.assets
     private var pipeline: InterpreterPipeline? = null
     private val network = VBridgeSocket()
+    private val diagnostics = PipelineDiagnostics(context)
 
     private val _isReady = MutableStateFlow(false)
     val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
+
+    private val _telemetry = MutableStateFlow(PipelineTelemetry())
+    val telemetry: StateFlow<PipelineTelemetry> = _telemetry.asStateFlow()
 
     private val _pipelineEvents = MutableSharedFlow<PipelineEvent>(extraBufferCapacity = 64)
     val pipelineEvents: SharedFlow<PipelineEvent> = _pipelineEvents.asSharedFlow()
@@ -56,6 +60,10 @@ class MeetingViewModel(
                 }
                 _isReady.value = true
                 
+                launch {
+                    diagnostics.telemetry.collect { _telemetry.value = it }
+                }
+
                 pipeline?.events?.collect { event ->
                     _pipelineEvents.emit(event)
                     handlePipelineEvent(event)
@@ -115,7 +123,8 @@ class MeetingViewModel(
             capture, vad, asrVi, asrEn, translator, ttsVi, ttsEn, playback, network,
             roomId = roomId,
             localParticipantId = "phone-a", // TODO: Make dynamic from settings/login
-            localParticipantName = "Anh"
+            localParticipantName = "Anh",
+            diagnostics = diagnostics
         )
     }
 
@@ -181,5 +190,12 @@ class MeetingViewModel(
 
     fun retryTurn(turnId: String) {
         // Implement retry logic if needed, e.g. re-sending to MT or ASR
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        pipeline?.stop()
+        network.disconnect()
+        diagnostics.stop()
     }
 }

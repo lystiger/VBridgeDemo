@@ -19,6 +19,7 @@ import com.example.demovbridge.benchmark.LatencyTracer
 import com.example.demovbridge.benchmark.TurnLatency
 import com.example.demovbridge.pipeline.Direction
 import com.example.demovbridge.pipeline.MeetingViewModel
+import com.example.demovbridge.pipeline.PipelineTelemetry
 import com.example.demovbridge.ui.conversation.VBridgeConversation
 import kotlinx.coroutines.launch
 
@@ -104,11 +105,12 @@ fun MainScreen(
     val uiTurns by viewModel.turns.collectAsState()
     val direction by viewModel.currentDirection.collectAsState()
     val latencies by latencyTracer.latencies.collectAsState()
+    val telemetry by viewModel.telemetry.collectAsState()
     var isRecording by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Latency HUD
-        LatencyHud(latencies)
+        // Telemetry & Latency HUD
+        TelemetryHud(telemetry, latencies.lastOrNull())
 
         // Header with Toggle and Record
         Row(
@@ -150,17 +152,34 @@ fun MainScreen(
 }
 
 @Composable
-fun LatencyHud(latencies: List<TurnLatency>) {
-    val latest = latencies.lastOrNull() ?: return
+fun TelemetryHud(telemetry: PipelineTelemetry, latestLatency: TurnLatency?) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f))
+        colors = CardDefaults.cardColors(
+            containerColor = if (telemetry.systemPssMemoryMb > 400) Color.Red.copy(alpha = 0.2f) 
+                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
+        )
     ) {
         Column(modifier = Modifier.padding(8.dp)) {
-            Text("Latency: E2E: ${latest.e2eMs}ms | VAD: ${latest.vadMs}ms | ASR: ${latest.asrMs}ms | MT: ${latest.mtMs}ms",
-                style = MaterialTheme.typography.labelSmall)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("RTF: %.2f".format(telemetry.currentRtf), style = MaterialTheme.typography.labelSmall)
+                Text("P95: ${telemetry.p95LatencyMs}ms", style = MaterialTheme.typography.labelSmall)
+                Text("RAM: ${telemetry.systemPssMemoryMb}MB", 
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (telemetry.systemPssMemoryMb > 400) Color.Red else Color.Unspecified
+                )
+                Text("Threads: ${telemetry.activeThreadCount}", style = MaterialTheme.typography.labelSmall)
+            }
+            if (latestLatency != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Last Latency: E2E: ${latestLatency.e2eMs}ms | VAD: ${latestLatency.vadMs}ms | ASR: ${latestLatency.asrMs}ms | MT: ${latestLatency.mtMs}ms",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
+                )
+            }
         }
     }
 }

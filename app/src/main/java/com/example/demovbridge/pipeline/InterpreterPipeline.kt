@@ -28,7 +28,8 @@ class InterpreterPipeline(
     private val network: VBridgeSocket,
     private val roomId: String,
     private val localParticipantId: String,
-    private val localParticipantName: String
+    private val localParticipantName: String,
+    private val diagnostics: PipelineDiagnostics? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
@@ -107,8 +108,15 @@ class InterpreterPipeline(
                     val startTime = SystemClock.elapsedRealtime()
                     val asr = if (currentDirection == Direction.ViToEn) asrVi else asrEn
                     val text = asr.transcribe(pcm)
+                    val endTime = SystemClock.elapsedRealtime()
+                    
+                    diagnostics?.recordAsrPerformance(
+                        audioDurationMs = (pcm.size / 16).toLong(),
+                        processingTimeMs = endTime - startTime
+                    )
+
                     asrResults[turnId] = text
-                    _events.emit(PipelineEvent.Transcribed(turnId, text, currentDirection, SystemClock.elapsedRealtime()))
+                    _events.emit(PipelineEvent.Transcribed(turnId, text, currentDirection, endTime))
                     mtIn.send(turnId to startTime)
                 } catch (e: Exception) {
                     _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Failed", false))
@@ -124,6 +132,8 @@ class InterpreterPipeline(
                     val translated = translator.translate(text, currentDirection)
                     val endTime = SystemClock.elapsedRealtime()
                     
+                    diagnostics?.recordLatency(endTime - startTime)
+
                     val event = TranslationEvent(
                         eventId = turnId,
                         roomId = roomId,
