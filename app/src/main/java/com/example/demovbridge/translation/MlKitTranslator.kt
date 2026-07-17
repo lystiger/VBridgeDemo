@@ -1,5 +1,6 @@
 package com.example.demovbridge.translation
 
+import android.os.SystemClock
 import com.example.demovbridge.pipeline.Direction
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -12,16 +13,23 @@ import kotlinx.coroutines.withContext
 class MlKitTranslator : Translator {
     private val translators = mutableMapOf<Direction, com.google.mlkit.nl.translate.Translator>()
 
-    override suspend fun ensureModels(direction: Direction): Unit = withContext(Dispatchers.IO) {
-        getOrCreateTranslator(direction).downloadModelIfNeeded(
-            DownloadConditions.Builder().requireWifi().build()
-        ).await()
-        Unit
-    }
-
-    override suspend fun translate(text: String, direction: Direction): String = withContext(Dispatchers.IO) {
-        if (text.isBlank()) return@withContext ""
-        getOrCreateTranslator(direction).translate(text).await()
+    override suspend fun translate(text: String, direction: Direction): TranslationResult = withContext(Dispatchers.IO) {
+        if (text.isBlank()) return@withContext TranslationResult("", 0, "MLKit")
+        
+        val startTime = SystemClock.elapsedRealtime()
+        val translator = getOrCreateTranslator(direction)
+        
+        // Ensure model is downloaded (basic check)
+        translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        
+        val result = translator.translate(text).await()
+        val endTime = SystemClock.elapsedRealtime()
+        
+        TranslationResult(
+            text = result,
+            latencyMs = endTime - startTime,
+            modelName = "MLKit Baseline"
+        )
     }
 
     private fun getOrCreateTranslator(direction: Direction): com.google.mlkit.nl.translate.Translator {
@@ -40,7 +48,7 @@ class MlKitTranslator : Translator {
         else -> TranslateLanguage.ENGLISH
     }
 
-    override fun close() {
+    fun close() {
         translators.values.forEach { it.close() }
         translators.clear()
     }

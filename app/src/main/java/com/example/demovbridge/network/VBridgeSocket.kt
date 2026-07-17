@@ -11,23 +11,33 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class VBridgeSocket(
-    private val serverUrl: String = "ws://vbridge-relay.herokuapp.com" // Placeholder
+    private val serverUrl: String = "wss://vbridge-relay.herokuapp.com" // Update to real relay
 ) {
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
         .build()
 
     private var socket: WebSocket? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var currentRoomId: String? = null
+    private var reconnectJob: Job? = null
+    private var reconnectDelay = 1000L
 
     private val _events = MutableSharedFlow<NetworkEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
 
     fun connect(roomId: String) {
+        currentRoomId = roomId
+        reconnectJob?.cancel()
         val request = Request.Builder().url("$serverUrl/room/$roomId").build()
+        
+        scope.launch { _events.emit(NetworkEvent.Connecting) }
+        
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d("VBridgeSocket", "Connected to room $roomId")
+                reconnectDelay = 1000L
                 scope.launch { _events.emit(NetworkEvent.Connected) }
             }
 
@@ -48,11 +58,14 @@ class VBridgeSocket(
                             startedAt = json.getLong("startedAt"),
                             endedAt = json.getLong("endedAt"),
                             latencyMs = json.getLong("latencyMs"),
-                            confidence = json.optDouble("confidence").toFloat()
+                            confidence = json.optDouble("confidence").let { if (it.isNaN()) null else it.toFloat() }
                         )
                         
-                        scope.launch {
-                            _events.emit(NetworkEvent.TranslationReceived(event))
+                        // Validate roomId
+                        if (event.roomId == currentRoomId) {
+                            scope.launch {
+                                _events.emit(NetworkEvent.TranslationReceived(event))
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -67,8 +80,18 @@ class VBridgeSocket(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e("VBridgeSocket", "Failure: ${t.message}")
                 scope.launch { _events.emit(NetworkEvent.Error(t.message ?: "Unknown error")) }
+                attemptReconnect()
             }
         })
+    }
+
+    private fun attemptReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(reconnectDelay)
+            reconnectDelay = (reconnectDelay * 2).coerceAtMost(30000L)
+            currentRoomId?.let { connect(it) }
+        }
     }
 
     fun sendTranslation(event: TranslationEvent) {
@@ -85,12 +108,14 @@ class VBridgeSocket(
             put("startedAt", event.startedAt)
             put("endedAt", event.endedAt)
             put("latencyMs", event.latencyMs)
-            put("confidence", event.confidence ?: 0.0)
+            put("confidence", event.confidence ?: JSONObject.NULL)
         }
         socket?.send(json.toString())
     }
 
     fun disconnect() {
+        currentRoomId = null
+        reconnectJob?.cancel()
         socket?.close(1000, "App closed")
         scope.cancel()
     }
@@ -112,6 +137,7 @@ data class TranslationEvent(
 )
 
 sealed interface NetworkEvent {
+    object Connecting : NetworkEvent
     object Connected : NetworkEvent
     object Disconnected : NetworkEvent
     data class TranslationReceived(val event: TranslationEvent) : NetworkEvent

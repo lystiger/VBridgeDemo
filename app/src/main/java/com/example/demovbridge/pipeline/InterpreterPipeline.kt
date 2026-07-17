@@ -16,6 +16,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import java.util.*
 
+data class PendingAudioTurn(
+    val turnId: String,
+    val pcm: ShortArray,
+    val direction: Direction,
+    val speechEndedAtMs: Long
+)
+
 class InterpreterPipeline(
     private val capture: AudioCapture,
     private val vad: SherpaVad,
@@ -36,13 +43,10 @@ class InterpreterPipeline(
     private val _events = MutableSharedFlow<PipelineEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<PipelineEvent> = _events.asSharedFlow()
 
-    private val asrIn = Channel<Pair<String, ShortArray>>(capacity = 4, onBufferOverflow = BufferOverflow.SUSPEND)
-    private val mtIn = Channel<Pair<String, Long>>(capacity = 8, onBufferOverflow = BufferOverflow.SUSPEND)
+    private val asrIn = Channel<PendingAudioTurn>(capacity = 4, onBufferOverflow = BufferOverflow.SUSPEND)
+    private val mtIn = Channel<Pair<PendingAudioTurn, String>>(capacity = 8, onBufferOverflow = BufferOverflow.SUSPEND)
     private val ttsIn = Channel<TranslationEvent>(capacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-
-    // Temporary storage for ASR results to feed into MT with timestamps
-    private val asrResults = mutableMapOf<String, String>()
-
+    
     @Volatile
     private var isMutedForPlayback = false
     
@@ -51,6 +55,8 @@ class InterpreterPipeline(
 
     var currentDirection = Direction.ViToEn
 
+    private var captureJob: Job? = null
+
     fun start() {
         // 0. Network Listener -> TTS
         scope.launch {
@@ -58,6 +64,9 @@ class InterpreterPipeline(
                 if (event is NetworkEvent.TranslationReceived) {
                     val translationEvent = event.event
                     
+                    // Safeguard D: Ignore self-produced events
+                    if (translationEvent.speakerId == localParticipantId) return@collect
+
                     // Safeguard C: Deduplication
                     if (recentEventIds.contains(translationEvent.eventId)) return@collect
                     
@@ -70,7 +79,9 @@ class InterpreterPipeline(
 
                     _events.emit(PipelineEvent.Translated(
                         translationEvent.eventId, translationEvent.sourceText, translationEvent.translatedText, 
-                        direction, SystemClock.elapsedRealtime()
+                        direction, SystemClock.elapsedRealtime(),
+                        speakerName = translationEvent.speakerName,
+                        isLocal = false
                     ))
                     
                     // Remote translation needs to be spoken locally
@@ -79,89 +90,68 @@ class InterpreterPipeline(
             }
         }
 
-        // 1. Capture -> VAD
-        scope.launch {
-            capture.capture().collect { samples ->
-                // Safeguard A: Hardware Capture Mutex (Simplified via flag)
-                if (isMutedForPlayback) return@collect
-                
-                val utterance = vad.process(samples)
-                if (utterance != null) {
-                    val turnId = UUID.randomUUID().toString()
-                    val pcm = ShortArray(utterance.sumOf { it.size })
-                    var offset = 0
-                    utterance.forEach {
-                        it.copyInto(pcm, offset)
-                        offset += it.size
-                    }
-                    
-                    _events.emit(PipelineEvent.SpeechEnded(turnId, SystemClock.elapsedRealtime(), pcm))
-                    asrIn.send(turnId to pcm)
-                }
-            }
-        }
-
         // 2. ASR
         scope.launch {
-            for ((turnId, pcm) in asrIn) {
+            for (pending in asrIn) {
                 try {
                     val startTime = SystemClock.elapsedRealtime()
-                    val asr = if (currentDirection == Direction.ViToEn) asrVi else asrEn
-                    val text = asr.transcribe(pcm)
+                    val asr = if (pending.direction == Direction.ViToEn) asrVi else asrEn
+                    val text = asr.transcribe(pending.pcm)
                     val endTime = SystemClock.elapsedRealtime()
                     
                     diagnostics?.recordAsrPerformance(
-                        audioDurationMs = (pcm.size / 16).toLong(),
+                        audioDurationMs = (pending.pcm.size / 16).toLong(),
                         processingTimeMs = endTime - startTime
                     )
 
-                    asrResults[turnId] = text
-                    _events.emit(PipelineEvent.Transcribed(turnId, text, currentDirection, endTime))
-                    mtIn.send(turnId to startTime)
+                    _events.emit(PipelineEvent.Transcribed(pending.turnId, text, pending.direction, endTime))
+                    mtIn.send(pending to text)
                 } catch (e: Exception) {
-                    _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Failed", false))
+                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Failed", false))
                 }
             }
         }
 
         // 3. Translation -> Network
         scope.launch {
-            for ((turnId, startTime) in mtIn) {
+            for ((pending, text) in mtIn) {
                 try {
-                    val text = asrResults.remove(turnId) ?: continue
-                    val translated = translator.translate(text, currentDirection)
+                    val startTime = SystemClock.elapsedRealtime()
+                    val result = translator.translate(text, pending.direction)
                     val endTime = SystemClock.elapsedRealtime()
                     
-                    diagnostics?.recordLatency(endTime - startTime)
+                    diagnostics?.recordLatency(result.latencyMs)
 
                     val event = TranslationEvent(
-                        eventId = turnId,
+                        eventId = pending.turnId,
                         roomId = roomId,
                         speakerId = localParticipantId,
                         speakerName = localParticipantName,
-                        sourceLanguage = currentDirection.asrLang,
-                        targetLanguage = if (currentDirection == Direction.ViToEn) "en" else "vi",
+                        sourceLanguage = pending.direction.asrLang,
+                        targetLanguage = if (pending.direction == Direction.ViToEn) "en" else "vi",
                         sourceText = text,
-                        translatedText = translated,
-                        startedAt = startTime,
+                        translatedText = result.text,
+                        startedAt = pending.speechEndedAtMs,
                         endedAt = endTime,
-                        latencyMs = endTime - startTime,
-                        confidence = 1.0f // Placeholder
+                        latencyMs = result.latencyMs,
+                        confidence = result.confidence
                     )
 
-                    // Add to deduplication cache to prevent re-processing if echoed
-                    recentEventIds.add(turnId)
+                    recentEventIds.add(pending.turnId)
                     if (recentEventIds.size > 200) {
                         recentEventIds.remove(recentEventIds.firstOrNull())
                     }
 
-                    _events.emit(PipelineEvent.Translated(turnId, text, translated, currentDirection, endTime))
+                    _events.emit(PipelineEvent.Translated(
+                        pending.turnId, text, result.text, pending.direction, endTime,
+                        speakerName = localParticipantName,
+                        isLocal = true
+                    ))
                     
-                    // Safeguard D: Retransmission Invariant (Only local events go to network)
                     network.sendTranslation(event)
                     
                 } catch (e: Exception) {
-                    _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Translation, e.message ?: "MT Failed", false))
+                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Translation, e.message ?: "MT Failed", false))
                 }
             }
         }
@@ -173,13 +163,15 @@ class InterpreterPipeline(
                     val targetTts = if (event.targetLanguage == "vi") ttsVi else ttsEn
                     
                     val pcm = targetTts.generate(event.translatedText)
-                    _events.emit(PipelineEvent.SpokenReady(event.eventId, pcm, SystemClock.elapsedRealtime()))
+                    _events.emit(PipelineEvent.SpokenReady(event.eventId, pcm, SystemClock.elapsedRealtime(), isLocal = false))
                     
                     // Safeguard A: Hardware Capture Mutex During Local TTS Playback
                     isMutedForPlayback = true
                     try {
                         playback.play(pcm)
                     } finally {
+                        // Cooldown after TTS playback to avoid re-entry
+                        delay(500)
                         isMutedForPlayback = false
                     }
                 } catch (e: Exception) {
@@ -187,6 +179,42 @@ class InterpreterPipeline(
                 }
             }
         }
+    }
+
+    fun startRecording() {
+        if (isMutedForPlayback) return
+        
+        captureJob?.cancel()
+        captureJob = scope.launch {
+            val audioData = mutableListOf<ShortArray>()
+            val turnId = UUID.randomUUID().toString()
+            val direction = currentDirection
+            
+            _events.emit(PipelineEvent.SpeechStarted(turnId, SystemClock.elapsedRealtime()))
+            
+            try {
+                capture.capture().collect { samples ->
+                    audioData.add(samples)
+                }
+            } finally {
+                if (audioData.isNotEmpty()) {
+                    val pcm = ShortArray(audioData.sumOf { it.size })
+                    var offset = 0
+                    audioData.forEach {
+                        it.copyInto(pcm, offset)
+                        offset += it.size
+                    }
+                    val endTime = SystemClock.elapsedRealtime()
+                    _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+                    asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
+                }
+            }
+        }
+    }
+
+    fun stopRecording() {
+        captureJob?.cancel()
+        captureJob = null
     }
 
     fun stop() {

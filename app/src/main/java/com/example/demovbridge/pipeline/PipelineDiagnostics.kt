@@ -3,12 +3,11 @@ package com.example.demovbridge.pipeline
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Debug
-import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -25,11 +24,10 @@ data class PipelineTelemetry(
 
 class PipelineDiagnostics(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val _telemetry = MutableSharedFlow<PipelineTelemetry>(extraBufferCapacity = 16)
-    val telemetry: SharedFlow<PipelineTelemetry> = _telemetry.asSharedFlow()
+    private val _telemetry = MutableStateFlow(PipelineTelemetry())
+    val telemetry: StateFlow<PipelineTelemetry> = _telemetry.asStateFlow()
 
     private val latencyHistory = ConcurrentLinkedQueue<Long>()
-    private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
     init {
         startMonitoring()
@@ -38,57 +36,38 @@ class PipelineDiagnostics(private val context: Context) {
     private fun startMonitoring() {
         scope.launch {
             while (isActive) {
-                emitTelemetry()
-                delay(2000) // Monitor every 2 seconds
+                updateSystemTelemetry()
+                delay(2000)
             }
         }
     }
 
-    private suspend fun emitTelemetry(rtf: Float = 0.0f, stage: String = "Idle") {
+    private fun updateSystemTelemetry() {
         val memoryInfo = Debug.MemoryInfo()
         Debug.getMemoryInfo(memoryInfo)
-        val pssTotal = memoryInfo.totalPss / 1024 // KB to MB
+        val pssTotal = memoryInfo.totalPss / 1024
 
         val threads = Thread.activeCount()
         
-        val p95 = calculateP95()
-
-        val data = PipelineTelemetry(
-            currentRtf = rtf,
-            p95LatencyMs = p95,
+        _telemetry.value = _telemetry.value.copy(
             systemPssMemoryMb = pssTotal,
-            activeThreadCount = threads,
-            lastStage = stage
+            activeThreadCount = threads
         )
 
-        _telemetry.emit(data)
-        
-        // Log critical violations from AGENTS.md
         if (pssTotal > 400) {
             Log.e("VBridgeDiag", "CRITICAL: Memory ceiling exceeded! PSS: ${pssTotal}MB > 400MB")
-        }
-        
-        Log.d("VBridgeDiag", "Telemetry: RTF=$rtf, P95=${p95}ms, PSS=${pssTotal}MB, Threads=$threads")
-    }
-
-    fun recordEvent(event: PipelineEvent) {
-        when (event) {
-            is PipelineEvent.Translated -> {
-                // For P95, we track end-to-end latency from ASR start to MT end
-                // Note: Simplified logic here, ideally we use timestamps from PipelineEvent
-            }
-            else -> {}
         }
     }
 
     fun recordAsrPerformance(audioDurationMs: Long, processingTimeMs: Long) {
         val rtf = if (audioDurationMs > 0) processingTimeMs.toFloat() / audioDurationMs else 0f
-        scope.launch { emitTelemetry(rtf, "ASR") }
+        _telemetry.value = _telemetry.value.copy(currentRtf = rtf)
     }
 
     fun recordLatency(latencyMs: Long) {
         latencyHistory.add(latencyMs)
         if (latencyHistory.size > 100) latencyHistory.poll()
+        _telemetry.value = _telemetry.value.copy(p95LatencyMs = calculateP95())
     }
 
     private fun calculateP95(): Long {

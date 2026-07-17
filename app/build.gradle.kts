@@ -66,6 +66,7 @@ dependencies {
     implementation(libs.play.services.tasks)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.okhttp)
+    implementation(libs.androidx.datastore.preferences)
     
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

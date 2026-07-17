@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -65,11 +68,15 @@ enum class TurnStatus { Transcribing, Translating, Complete, Error }
 
 data class ConversationTurn(
     val id: String,
+    val speakerId: String,
+    val speakerName: String,
+    val isLocal: Boolean,
     val direction: TurnDirection,
     val sourceText: String,
     val translatedText: String,
     val status: TurnStatus,
     val errorMessage: String? = null,
+    val latencyMs: Long? = null
 )
 
 data class ConversationUiState(
@@ -77,7 +84,7 @@ data class ConversationUiState(
 )
 
 // ---------------------------------------------------------------------------
-// ViewModel
+// ViewModel (Legacy/Demo - Not used in MeetingViewModel)
 // ---------------------------------------------------------------------------
 
 class VBridgeViewModel : ViewModel() {
@@ -85,25 +92,12 @@ class VBridgeViewModel : ViewModel() {
     val uiState: StateFlow<ConversationUiState> = _uiState.asStateFlow()
 
     fun retryTurn(turnId: String) {
-        // MOCK: In a real app, this would re-trigger the translation pipeline for the given ID
         val currentTurns = _uiState.value.turns
         val updatedTurns = currentTurns.map {
             if (it.id == turnId) it.copy(status = TurnStatus.Translating, errorMessage = null)
             else it
         }
         _uiState.value = _uiState.value.copy(turns = updatedTurns)
-    }
-
-    // MOCK helper to add a turn for demo/testing
-    fun addMockTurn(direction: TurnDirection, source: String, translated: String, status: TurnStatus) {
-        val newTurn = ConversationTurn(
-            id = UUID.randomUUID().toString(),
-            direction = direction,
-            sourceText = source,
-            translatedText = translated,
-            status = status
-        )
-        _uiState.value = _uiState.value.copy(turns = _uiState.value.turns + newTurn)
     }
 }
 
@@ -230,7 +224,7 @@ private fun TranslationTurnCard(
     modifier: Modifier = Modifier,
 ) {
     val durationMs = rememberMotionDurationMs()
-    val fromLeadingEdge = turn.direction == TurnDirection.ViToEn
+    val fromLeadingEdge = turn.isLocal
 
     val transitionState = remember {
         MutableTransitionState(initialState = false).apply { targetState = true }
@@ -238,35 +232,49 @@ private fun TranslationTurnCard(
 
     Box(
         modifier = modifier.fillMaxWidth(),
-        contentAlignment = if (fromLeadingEdge) Alignment.CenterStart else Alignment.CenterEnd,
+        contentAlignment = if (fromLeadingEdge) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
         AnimatedVisibility(
             visibleState = transitionState,
             enter = slideInHorizontally(tween(durationMs)) { fullWidth ->
-                if (fromLeadingEdge) -fullWidth / 3 else fullWidth / 3
+                if (fromLeadingEdge) fullWidth / 3 else -fullWidth / 3
             } + fadeIn(tween(durationMs)),
         ) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth(0.85f)
-                    .wrapContentWidth(if (fromLeadingEdge) Alignment.Start else Alignment.End),
+                    .wrapContentWidth(if (fromLeadingEdge) Alignment.End else Alignment.Start),
                 shape = RoundedCornerShape(
                     topStart = 16.dp,
                     topEnd = 16.dp,
-                    bottomStart = if (fromLeadingEdge) 4.dp else 16.dp,
-                    bottomEnd = if (fromLeadingEdge) 16.dp else 4.dp,
+                    bottomStart = if (fromLeadingEdge) 16.dp else 4.dp,
+                    bottomEnd = if (fromLeadingEdge) 4.dp else 16.dp,
                 ),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    containerColor = if (fromLeadingEdge) MaterialTheme.colorScheme.primaryContainer 
+                                     else MaterialTheme.colorScheme.secondaryContainer,
                 ),
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    DirectionChip(direction = turn.direction)
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (turn.isLocal) "You" else turn.speakerName,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (fromLeadingEdge) MaterialTheme.colorScheme.primary 
+                                     else MaterialTheme.colorScheme.secondary
+                        )
+                        DirectionChip(direction = turn.direction)
+                    }
 
                     Text(
                         text = turn.sourceText,
                         modifier = Modifier.padding(top = 8.dp),
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
@@ -274,7 +282,7 @@ private fun TranslationTurnCard(
                         turn = turn,
                         durationMs = durationMs,
                         onRetry = onRetry,
-                        modifier = Modifier.padding(top = 8.dp),
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
@@ -287,8 +295,8 @@ private fun DirectionChip(direction: TurnDirection) {
     Text(
         text = "${direction.sourceLabel} → ${direction.targetLabel}",
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.Medium,
+        fontSize = 10.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
     )
 }
 
@@ -383,7 +391,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "Tap record and speak — the translation will appear here.",
+                text = "Hold the button and speak — the translation will appear here.",
                 modifier = Modifier.padding(top = 4.dp, start = 32.dp, end = 32.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
@@ -408,10 +416,12 @@ private fun PreviewEmpty() {
 @Preview(showBackground = true, name = "Conversation - Mixed States")
 @Composable
 private fun PreviewMixed() {
-    // MOCK: Sample data for previewing different states
     val mockTurns = listOf(
         ConversationTurn(
             id = "1",
+            speakerId = "user1",
+            speakerName = "Anh",
+            isLocal = true,
             direction = TurnDirection.ViToEn,
             sourceText = "Xin chào, bạn khỏe không?",
             translatedText = "Hello, how are you?",
@@ -419,6 +429,9 @@ private fun PreviewMixed() {
         ),
         ConversationTurn(
             id = "2",
+            speakerId = "user2",
+            speakerName = "Partner",
+            isLocal = false,
             direction = TurnDirection.EnToVi,
             sourceText = "I'm doing well, thank you! How about you?",
             translatedText = "Tôi khỏe, cảm ơn! Còn bạn thì sao?",
@@ -426,6 +439,9 @@ private fun PreviewMixed() {
         ),
         ConversationTurn(
             id = "3",
+            speakerId = "user1",
+            speakerName = "Anh",
+            isLocal = true,
             direction = TurnDirection.ViToEn,
             sourceText = "Tôi cũng khỏe.",
             translatedText = "",
@@ -433,6 +449,9 @@ private fun PreviewMixed() {
         ),
         ConversationTurn(
             id = "4",
+            speakerId = "user2",
+            speakerName = "Partner",
+            isLocal = false,
             direction = TurnDirection.EnToVi,
             sourceText = "That's good to hear.",
             translatedText = "",
