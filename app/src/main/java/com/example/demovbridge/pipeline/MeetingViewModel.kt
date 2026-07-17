@@ -8,6 +8,10 @@ import com.example.demovbridge.audio.AudioCapture
 import com.example.demovbridge.audio.AudioPlayback
 import com.example.demovbridge.translation.MlKitTranslator
 import com.example.demovbridge.tts.SherpaTts
+import com.example.demovbridge.network.VBridgeSocket
+import com.example.demovbridge.pipeline.Direction
+import com.example.demovbridge.pipeline.InterpreterPipeline
+import com.example.demovbridge.pipeline.PipelineEvent
 import com.example.demovbridge.ui.conversation.ConversationTurn
 import com.example.demovbridge.ui.conversation.TurnDirection
 import com.example.demovbridge.ui.conversation.TurnStatus
@@ -25,10 +29,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class MeetingViewModel(
-    private val context: Context
+    private val context: Context,
+    private val roomId: String
 ) : ViewModel() {
     private val assets = context.assets
     private var pipeline: InterpreterPipeline? = null
+    private val network = VBridgeSocket()
 
     private val _isReady = MutableStateFlow(false)
     val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
@@ -62,13 +68,11 @@ class MeetingViewModel(
     }
 
     private fun initializePipeline() {
-        android.util.Log.d("VBridge", "Initializing Pipeline components...")
+        // Connect to network
+        network.connect(roomId)
+        
         val capture = AudioCapture()
-        
-        android.util.Log.d("VBridge", "Loading VAD...")
         val vad = SherpaVad(assets, "vad/silero_vad.onnx")
-        
-        android.util.Log.d("VBridge", "Loading ASR Vi...")
         val asrVi = SherpaAsr(
             assets,
             encoderPath = "asr-vi/encoder.onnx",
@@ -76,8 +80,6 @@ class MeetingViewModel(
             joinerPath = "asr-vi/joiner.onnx",
             tokensPath = "asr-vi/tokens.txt"
         )
-        
-        android.util.Log.d("VBridge", "Loading ASR En...")
         val asrEn = SherpaAsr(
             assets,
             encoderPath = "asr-en/encoder.onnx",
@@ -85,18 +87,14 @@ class MeetingViewModel(
             joinerPath = "asr-en/joiner.onnx",
             tokensPath = "asr-en/tokens.txt"
         )
-        
-        android.util.Log.d("VBridge", "Loading Translator...")
         val translator = MlKitTranslator()
         
-        android.util.Log.d("VBridge", "Preparing TTS assets...")
         val ttsEnDir = File(context.filesDir, "tts-en")
         ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))
         
         val ttsViDir = File(context.filesDir, "tts-vi")
         ResourceUtils.copyAssetsDir(context, "tts-vi/espeak-ng-data", File(ttsViDir, "espeak-ng-data"))
 
-        android.util.Log.d("VBridge", "Loading TTS En...")
         val ttsEn = SherpaTts(
             assets,
             modelPath = "tts-en/vits.onnx",
@@ -104,7 +102,6 @@ class MeetingViewModel(
             dataDir = File(ttsEnDir, "espeak-ng-data").absolutePath
         )
         
-        android.util.Log.d("VBridge", "Loading TTS Vi...")
         val ttsVi = SherpaTts(
             assets,
             modelPath = "tts-vi/vits.onnx",
@@ -112,13 +109,14 @@ class MeetingViewModel(
             dataDir = File(ttsViDir, "espeak-ng-data").absolutePath
         )
         
-        android.util.Log.d("VBridge", "Loading Playback...")
         val playback = AudioPlayback()
 
         pipeline = InterpreterPipeline(
-            capture, vad, asrVi, asrEn, translator, ttsVi, ttsEn, playback
+            capture, vad, asrVi, asrEn, translator, ttsVi, ttsEn, playback, network,
+            roomId = roomId,
+            localParticipantId = "phone-a", // TODO: Make dynamic from settings/login
+            localParticipantName = "Anh"
         )
-        android.util.Log.d("VBridge", "Pipeline initialization complete.")
     }
 
     private fun handlePipelineEvent(event: PipelineEvent) {
@@ -172,6 +170,7 @@ class MeetingViewModel(
 
     fun stopPipeline() {
         pipeline?.stop()
+        network.disconnect()
     }
 
     fun toggleDirection() {

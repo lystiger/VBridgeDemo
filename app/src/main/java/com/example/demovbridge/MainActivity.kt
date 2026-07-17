@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        viewModel = MeetingViewModel(applicationContext)
+        viewModel = MeetingViewModel(applicationContext, "demo-room-1")
 
         lifecycleScope.launch {
             viewModel.pipelineEvents.collect { latencyTracer.track(it) }

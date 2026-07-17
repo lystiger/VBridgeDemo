@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
+import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
@@ -32,6 +33,12 @@ class AudioCapture(
 
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
             throw RuntimeException("AudioRecord initialization failed")
+        }
+
+        if (NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(audioRecord.audioSessionId)?.let {
+                it.enabled = true
+            }
         }
 
         val buffer = ShortArray(480) // 30ms at 16kHz
