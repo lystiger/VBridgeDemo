@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
                 
                 // 2. Try to introspect one model if assets are present
                 // Note: We don't copy here, just check if already copied by a previous run or Phase 1
-                val viEnDir = File(applicationContext.filesDir, "mt-vi-en")
+                val viEnDir = File(applicationContext.filesDir, "mt-vi-en/onnx_int8")
                 val encoderFile = File(viEnDir, "encoder_model.onnx")
                 if (encoderFile.exists()) {
                     val session = env.createSession(encoderFile.path)

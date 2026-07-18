@@ -10,8 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class PhoMtOnnxTranslator(context: Context) : Translator {
-    private val viEnDir = OnnxAssets.copyAssetDir(context, "mt-vi-en")
-    private val enViDir = OnnxAssets.copyAssetDir(context, "mt-en-vi")
+    private val viEnDir = OnnxAssets.copyAssetDir(context, "mt-vi-en/onnx_int8")
+    private val enViDir = OnnxAssets.copyAssetDir(context, "mt-en-vi/onnx_int8")
 
     private var viEn: MarianOnnxEngine? = null
     private var enVi: MarianOnnxEngine? = null
