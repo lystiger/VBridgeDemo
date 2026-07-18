@@ -47,6 +47,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        android.util.Log.wtf("VBRIDGE_DEBUG", "App Started - Version 1.1")
+        try {
+            android.util.Log.d("VBRIDGE_DEBUG", "Pre-loading library check...")
+            System.loadLibrary("whisper")
+            android.util.Log.i("VBRIDGE_DEBUG", "Native library loaded successfully in MainActivity")
+        } catch (e: Throwable) {
+            android.util.Log.e("VBRIDGE_DEBUG", "CRITICAL: Native library load failed: ${e.message}")
+        }
+
         settingsManager = SettingsManager(applicationContext)
 
         microphonePermissionGranted =

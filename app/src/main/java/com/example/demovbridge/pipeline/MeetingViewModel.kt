@@ -111,26 +111,69 @@ class MeetingViewModel(
 
     private suspend fun initializeInternal() {
         val isOfflineMode = _isOffline.value
+        android.util.Log.wtf("VBRIDGE_DEBUG", "[VM] Starting init. Offline: $isOfflineMode")
         
-        if (!isOfflineMode) {
-            network.connect(config.roomId)
-        } else {
-            network.disconnect()
+        // Start network connection in background so it doesn't block ASR
+        viewModelScope.launch {
+            if (!isOfflineMode) {
+                android.util.Log.wtf("VBRIDGE_DEBUG", "[VM] Connecting to network (bg)...")
+                network.connect(config.roomId)
+            } else {
+                network.disconnect()
+            }
         }
         
-        // Ensure model is present
-        val modelFile = File(context.filesDir, "ggml-small-q5_1.bin")
+        // --- Model Discovery Logic ---
+        val modelName = "ggml-tiny-q5_1.bin"
+        val modelFile = File(context.filesDir, modelName)
+        
+        Log.d("MeetingViewModel", "Looking for model: $modelName")
+
+        // 1. Check if it already exists in filesDir
         if (!modelFile.exists()) {
-            // Try copying from assets if available
-            try {
-                ResourceUtils.copyAssetsDir(context, "models", context.filesDir)
-            } catch (e: Exception) {
-                Log.w("MeetingViewModel", "Could not copy models from assets")
+            Log.d("MeetingViewModel", "Model not found in filesDir. Checking assets...")
+            
+            // 2. Try to find any .bin file in assets/models or assets/
+            val assetsInModels = context.assets.list("models") ?: emptyArray()
+            val assetsInRoot = context.assets.list("") ?: emptyArray()
+            
+            val foundInModels = assetsInModels.find { it.endsWith(".bin") }
+            val foundInRoot = assetsInRoot.find { it.endsWith(".bin") }
+            
+            val assetToCopy = when {
+                foundInModels != null -> "models/$foundInModels"
+                foundInRoot != null -> foundInRoot
+                else -> null
             }
+
+            if (assetToCopy != null) {
+                Log.i("MeetingViewModel", "Found model in assets: $assetToCopy. Copying to filesDir...")
+                try {
+                    ResourceUtils.copyAssetsDir(context, assetToCopy, modelFile)
+                } catch (e: Exception) {
+                    Log.e("MeetingViewModel", "Failed to copy asset $assetToCopy: ${e.message}")
+                }
+            } else {
+                Log.e("MeetingViewModel", "NO MODEL FOUND IN ASSETS (checked 'models/' and root)")
+                Log.e("MeetingViewModel", "Available assets in root: ${assetsInRoot.joinToString()}")
+            }
+        }
+
+        if (modelFile.exists()) {
+            Log.i("MeetingViewModel", "Model file ready: ${modelFile.absolutePath} (${modelFile.length()} bytes)")
+        } else {
+            Log.e("MeetingViewModel", "CRITICAL: Model file missing. ASR will fail.")
+            // Don't throw yet, let WhisperAsr log the error so we see it in logcat
         }
 
         asr?.release()
         val newAsr = WhisperAsr(context, modelFile.absolutePath)
+        
+        if (!newAsr.isReady()) {
+            _meetingState.value = MeetingState.Error("Whisper model missing. Please place $modelName in assets/models/")
+            // We'll proceed but ASR will be disabled
+            Log.e("MeetingViewModel", "ASR is not ready. Transcriptions will be empty.")
+        }
         asr = newAsr
         
         val translator: Translator = if (isOfflineMode) MlKitTranslator() else ServerTranslator()

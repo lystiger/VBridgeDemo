@@ -23,7 +23,13 @@ object ResourceUtils {
     }
 
     private fun copyAssetFile(context: Context, assetPath: String, targetFile: File) {
-        if (targetFile.exists()) return
+        if (targetFile.exists()) {
+            // Check if it's a zero-byte file or something went wrong
+            if (targetFile.length() > 0) return
+            targetFile.delete()
+        }
+        
+        targetFile.parentFile?.mkdirs()
         
         context.assets.open(assetPath).use { input ->
             FileOutputStream(targetFile).use { output ->

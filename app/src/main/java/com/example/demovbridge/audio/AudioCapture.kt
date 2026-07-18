@@ -47,14 +47,27 @@ class AudioCapture(
             // Set thread priority for audio capture
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
+            var totalRead = 0
+            var allZeros = true
             while (coroutineContext.isActive) {
                 val read = audioRecord.read(buffer, 0, buffer.size)
                 if (read > 0) {
+                    if (allZeros) {
+                        for (i in 0 until read) {
+                            if (buffer[i] != 0.toShort()) {
+                                allZeros = false
+                                break
+                            }
+                        }
+                    }
+                    totalRead += read
                     emit(buffer.copyOf(read))
                 } else if (read < 0) {
+                    android.util.Log.e("AudioCapture", "AudioRecord read error: $read")
                     break
                 }
             }
+            android.util.Log.d("AudioCapture", "Capture finished. Total samples: $totalRead, All Zeros: $allZeros")
         } finally {
             audioRecord.stop()
             audioRecord.release()

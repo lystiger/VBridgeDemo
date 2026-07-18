@@ -67,7 +67,7 @@ void inputStreamClose(void * ctx) {
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_whispercppdemo_whisper_WhisperLib_00024Companion_initContextFromInputStream(
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromInputStream(
         JNIEnv *env, jobject thiz, jobject input_stream) {
     UNUSED(thiz);
 
@@ -147,7 +147,11 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
     UNUSED(thiz);
     struct whisper_context *context = NULL;
     const char *model_path_chars = (*env)->GetStringUTFChars(env, model_path_str, NULL);
-    context = whisper_init_from_file_with_params(model_path_chars, whisper_context_default_params());
+
+    struct whisper_context_params cparams = whisper_context_default_params();
+    cparams.use_gpu = false; // FORCE CPU ONLY
+
+    context = whisper_init_from_file_with_params(model_path_chars, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path_str, model_path_chars);
     return (jlong) context;
 }
@@ -161,6 +165,10 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_freeContext(
     whisper_free(context);
 }
 
+void on_whisper_progress(struct whisper_context * ctx, struct whisper_state * state, int progress, void * user_data) {
+    __android_log_print(ANDROID_LOG_INFO, "VBRIDGE_DEBUG", "[JNI] Whisper progress: %d%%", progress);
+}
+
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint num_threads, jstring language_str, jfloatArray audio_data) {
@@ -172,7 +180,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
 
     // The below adapted from the Objective-C iOS sample
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.print_realtime = true;
+    params.print_realtime = false;
     params.print_progress = false;
     params.print_timestamps = true;
     params.print_special = false;
@@ -183,12 +191,31 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     params.no_context = true;
     params.single_segment = false;
 
+    // Disable suppression for visibility
+    params.suppress_blank = false;
+    params.suppress_nst = false;
+    params.no_speech_thold = 0.8f;
+    params.temperature = 0.0f;
+
+    params.progress_callback = NULL;
+
     whisper_reset_timings(context);
 
-    LOGI("About to run whisper_full with language %s", language_chars);
-    if (whisper_full(context, params, audio_data_arr, audio_data_length) != 0) {
-        LOGI("Failed to run the model");
+    LOGI("[JNI] Calling whisper_full with lang '%s', threads: %d", params.language, params.n_threads);
+
+    int result = whisper_full(context, params, audio_data_arr, audio_data_length);
+
+    LOGI("[JNI] whisper_full finished with code: %d", result);
+
+    if (result != 0) {
+        LOGW("whisper_full failed with return code: %d", result);
     } else {
+        int n_segments = whisper_full_n_segments(context);
+        LOGI("whisper_full succeeded. Found %d segments.", n_segments);
+        for (int i = 0; i < n_segments; ++i) {
+            const char * text = whisper_full_get_segment_text(context, i);
+            LOGI("  Segment %d: '%s'", i, text);
+        }
         whisper_print_timings(context);
     }
     (*env)->ReleaseStringUTFChars(env, language_str, language_chars);

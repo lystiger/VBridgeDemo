@@ -18,21 +18,28 @@ class WhisperContext private constructor(private var ptr: Long) {
 
     suspend fun transcribeData(data: FloatArray, language: String = "en", printTimestamp: Boolean = true): String = withContext(scope.coroutineContext) {
         require(ptr != 0L)
-        val numThreads = WhisperCpuConfig.preferredThreadCount
-        Log.d(LOG_TAG, "Selecting $numThreads threads")
+        // Force 1 thread to isolate deadlock issues
+        val numThreads = 1
+        android.util.Log.wtf("VBRIDGE_DEBUG", "[JNI] ENTER transcribeData (1 thread, ${data.size} samples)")
+        
+        val startTime = System.currentTimeMillis()
         WhisperLib.fullTranscribe(ptr, numThreads, language, data)
+        val endTime = System.currentTimeMillis()
+        
         val textCount = WhisperLib.getTextSegmentCount(ptr)
+        android.util.Log.wtf("VBRIDGE_DEBUG", "[JNI] EXIT transcribeData (took ${endTime - startTime}ms, segments: $textCount)")
+        
         return@withContext buildString {
             for (i in 0 until textCount) {
+                val textSegment = WhisperLib.getTextSegment(ptr, i)
                 if (printTimestamp) {
                     val textTimestamp = "[${toTimestamp(WhisperLib.getTextSegmentT0(ptr, i))} --> ${toTimestamp(WhisperLib.getTextSegmentT1(ptr, i))}]"
-                    val textSegment = WhisperLib.getTextSegment(ptr, i)
                     append("$textTimestamp: $textSegment\n")
                 } else {
-                    append(WhisperLib.getTextSegment(ptr, i))
+                    append(textSegment)
                 }
             }
-        }
+        }.trim()
     }
 
     suspend fun benchMemory(nthreads: Int): String = withContext(scope.coroutineContext) {
@@ -92,40 +99,12 @@ class WhisperContext private constructor(private var ptr: Long) {
 private class WhisperLib {
     companion object {
         init {
-            Log.d(LOG_TAG, "Primary ABI: ${Build.SUPPORTED_ABIS[0]}")
-            var loadVfpv4 = false
-            var loadV8fp16 = false
-            if (isArmEabiV7a()) {
-                // armeabi-v7a needs runtime detection support
-                val cpuInfo = cpuInfo()
-                cpuInfo?.let {
-                    Log.d(LOG_TAG, "CPU info: $cpuInfo")
-                    if (cpuInfo.contains("vfpv4")) {
-                        Log.d(LOG_TAG, "CPU supports vfpv4")
-                        loadVfpv4 = true
-                    }
-                }
-            } else if (isArmEabiV8a()) {
-                // ARMv8.2a needs runtime detection support
-                val cpuInfo = cpuInfo()
-                cpuInfo?.let {
-                    Log.d(LOG_TAG, "CPU info: $cpuInfo")
-                    if (cpuInfo.contains("fphp")) {
-                        Log.d(LOG_TAG, "CPU supports fp16 arithmetic")
-                        loadV8fp16 = true
-                    }
-                }
-            }
-
-            if (loadVfpv4) {
-                Log.d(LOG_TAG, "Loading libwhisper_vfpv4.so")
-                System.loadLibrary("whisper_vfpv4")
-            } else if (loadV8fp16) {
-                Log.d(LOG_TAG, "Loading libwhisper_v8fp16_va.so")
-                System.loadLibrary("whisper_v8fp16_va")
-            } else {
-                Log.d(LOG_TAG, "Loading libwhisper.so")
+            android.util.Log.wtf("VBRIDGE_DEBUG", "WhisperLib static init started")
+            try {
                 System.loadLibrary("whisper")
+                android.util.Log.wtf("VBRIDGE_DEBUG", "WhisperLib native library loaded")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.wtf("VBRIDGE_DEBUG", "WhisperLib load failed: ${e.message}")
             }
         }
 
@@ -158,23 +137,4 @@ private fun toTimestamp(t: Long, comma: Boolean = false): String {
 
     val delimiter = if (comma) "," else "."
     return String.format("%02d:%02d:%02d%s%03d", hr, min, sec, delimiter, msec)
-}
-
-private fun isArmEabiV7a(): Boolean {
-    return Build.SUPPORTED_ABIS[0].equals("armeabi-v7a")
-}
-
-private fun isArmEabiV8a(): Boolean {
-    return Build.SUPPORTED_ABIS[0].equals("arm64-v8a")
-}
-
-private fun cpuInfo(): String? {
-    return try {
-        File("/proc/cpuinfo").inputStream().bufferedReader().use {
-            it.readText()
-        }
-    } catch (e: Exception) {
-        Log.w(LOG_TAG, "Couldn't read /proc/cpuinfo", e)
-        null
-    }
 }

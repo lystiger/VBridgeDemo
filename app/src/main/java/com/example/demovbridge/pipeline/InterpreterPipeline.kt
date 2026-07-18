@@ -60,8 +60,10 @@ class InterpreterPipeline(
     fun start() {
         if (started) return
         started = true
+        android.util.Log.wtf("VBRIDGE_DEBUG", "[PIPELINE] Pipeline started")
 
         // 1. Network Listener -> TTS
+        // ...
         scope.launch {
             network.events.collect { event ->
                 if (event is NetworkEvent.TranslationReceived) {
@@ -90,13 +92,16 @@ class InterpreterPipeline(
 
         // 2. ASR with Timeout
         scope.launch {
+            android.util.Log.wtf("VBRIDGE_DEBUG", "[PIPELINE] ASR consumer loop active")
             for (pending in asrIn) {
                 try {
+                    android.util.Log.wtf("VBRIDGE_DEBUG", "[PIPELINE] ASR received turn: ${pending.turnId} (${pending.pcm.size} samples)")
                     val startTime = SystemClock.elapsedRealtime()
-                    val text = withTimeout(15000) {
+                    val text = withTimeout(60000) { // Increased to 60s for Small model
                         asr.transcribe(pending.pcm, pending.direction)
                     }
                     val endTime = SystemClock.elapsedRealtime()
+                    android.util.Log.wtf("VBRIDGE_DEBUG", "[PIPELINE] ASR finished: '$text' in ${endTime - startTime}ms")
                     
                     diagnostics?.recordAsrPerformance(
                         audioDurationMs = (pending.pcm.size / 16).toLong(),
@@ -104,7 +109,13 @@ class InterpreterPipeline(
                     )
 
                     _events.emit(PipelineEvent.Transcribed(pending.turnId, text, pending.direction, endTime))
-                    mtIn.send(pending to text)
+                    
+                    if (text.isNotBlank()) {
+                        mtIn.send(pending to text)
+                    } else {
+                        android.util.Log.w("InterpreterPipeline", "ASR returned empty string, not sending to MT")
+                        _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, "Empty transcription", false))
+                    }
                 } catch (e: Exception) {
                     _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Timeout/Failed", false))
                 }
@@ -222,16 +233,27 @@ class InterpreterPipeline(
             } finally {
                 withContext(NonCancellable) {
                     if (audioData.isNotEmpty()) {
-                        val pcm = ShortArray(audioData.sumOf { it.size })
+                        val totalSamples = audioData.sumOf { it.size }
+                        val pcm = ShortArray(totalSamples)
                         var offset = 0
                         audioData.forEach {
                             it.copyInto(pcm, offset)
                             offset += it.size
                         }
-                        val endTime = SystemClock.elapsedRealtime()
-                        _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
-                        asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
+                        
+                        val durationMs = totalSamples / 16
+                        android.util.Log.d("InterpreterPipeline", "Audio turn collected: $totalSamples samples (${durationMs}ms)")
+                        
+                        if (durationMs < 500) {
+                            android.util.Log.w("InterpreterPipeline", "Audio too short (${durationMs}ms), skipping ASR")
+                            _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, "Audio too short", false))
+                        } else {
+                            val endTime = SystemClock.elapsedRealtime()
+                            _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+                            asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
+                        }
                     } else {
+                        android.util.Log.w("InterpreterPipeline", "No audio data collected for turn $turnId")
                         _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, "No audio captured", false))
                     }
                 }

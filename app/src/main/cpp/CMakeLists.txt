@@ -67,10 +67,11 @@ target_link_libraries(whisper
 )
 
 target_compile_definitions(whisper PUBLIC GGML_USE_CPU)
-target_compile_definitions(whisper PRIVATE WHISPER_VERSION=\"1.13.3\")
-target_compile_definitions(whisper PRIVATE GGML_VERSION=\"unknown\")
-target_compile_definitions(whisper PRIVATE GGML_COMMIT=\"unknown\")
+target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.13.3")
+target_compile_definitions(whisper PRIVATE GGML_VERSION="unknown")
+target_compile_definitions(whisper PRIVATE GGML_COMMIT="unknown")
 
-if(ANDROID_ABI STREQUAL "arm64-v8a")
-    target_compile_definitions(whisper PUBLIC GGML_USE_CPU_AARCH64)
-endif()
+# Temporarily disabled AARCH64 specifics to isolate hangs
+# if(ANDROID_ABI STREQUAL "arm64-v8a")
+#    target_compile_definitions(whisper PUBLIC GGML_USE_CPU_AARCH64)
+# endif()

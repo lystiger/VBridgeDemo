@@ -23,8 +23,9 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += "-O3"
+                cppFlags += "-O2"
                 arguments += "-DGGML_OPENMP=OFF"
+                arguments += "-DGGML_NEON=OFF"
             }
         }
 
