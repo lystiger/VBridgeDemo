@@ -38,17 +38,23 @@ class MainActivity : ComponentActivity() {
     private var viewModel: MeetingViewModel? = null
     private val latencyTracer = LatencyTracer()
 
+    private var microphonePermissionGranted by mutableStateOf(false)
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            viewModel?.startRecording()
-        }
+    ) { granted ->
+        microphonePermissionGranted = granted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsManager = SettingsManager(applicationContext)
+
+        microphonePermissionGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
 
         setContent {
             MaterialTheme {
@@ -59,15 +65,6 @@ class MainActivity : ComponentActivity() {
                     val config by settingsManager.config.collectAsState(initial = null)
                     var currentConfig by remember { mutableStateOf<ParticipantConfig?>(null) }
                     
-                    val hasPermission = remember {
-                        mutableStateOf(
-                            ContextCompat.checkSelfPermission(
-                                this@MainActivity,
-                                Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                        )
-                    }
-
                     LaunchedEffect(config) {
                         if (config != null && currentConfig == null) {
                             currentConfig = config
@@ -99,10 +96,10 @@ class MainActivity : ComponentActivity() {
                                 MainScreen(
                                     viewModel = vm,
                                     latencyTracer = latencyTracer,
-                                    onRecord = {
+                                    onRequestMicrophonePermission = {
                                         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     },
-                                    hasPermission = hasPermission.value
+                                    hasPermission = microphonePermissionGranted
                                 )
                             }
                         }
@@ -214,7 +211,7 @@ fun PermissionWarning() {
 fun MainScreen(
     viewModel: MeetingViewModel, 
     latencyTracer: LatencyTracer,
-    onRecord: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit,
     hasPermission: Boolean
 ) {
     val uiTurns by viewModel.turns.collectAsState()
@@ -268,12 +265,12 @@ fun MainScreen(
                             if (isPlaying) return@pointerInput
                             detectTapGestures(
                                 onPress = {
-                                    if (hasPermission) {
+                                    if (!hasPermission) {
+                                        onRequestMicrophonePermission()
+                                    } else {
                                         viewModel.startRecording()
                                         tryAwaitRelease()
                                         viewModel.stopRecording()
-                                    } else {
-                                        onRecord()
                                     }
                                 }
                             )

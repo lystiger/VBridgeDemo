@@ -19,6 +19,15 @@ android {
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
         }
+
+        val relayUrl = providers.gradleProperty("VBRIDGE_RELAY_URL")
+            .getOrElse("wss://REPLACE_WITH_REAL_RELAY")
+
+        buildConfigField(
+            "String",
+            "VBRIDGE_RELAY_URL",
+            "\"$relayUrl\""
+        )
     }
 
     buildTypes {
@@ -39,6 +48,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources {

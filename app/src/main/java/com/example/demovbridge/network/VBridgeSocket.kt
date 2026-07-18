@@ -1,5 +1,6 @@
 package com.example.demovbridge.network
 
+import com.example.demovbridge.BuildConfig
 import android.util.Log
 import com.example.demovbridge.pipeline.Direction
 import kotlinx.coroutines.*
@@ -11,7 +12,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class VBridgeSocket(
-    private val serverUrl: String = "wss://vbridge-relay.herokuapp.com" // Update to real relay
+    private val serverUrl: String = BuildConfig.VBRIDGE_RELAY_URL
 ) {
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -28,6 +29,11 @@ class VBridgeSocket(
     val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
 
     fun connect(roomId: String) {
+        validateServerUrl()?.let { message ->
+            scope.launch { _events.emit(NetworkEvent.Error(message)) }
+            return
+        }
+
         currentRoomId = roomId
         reconnectJob?.cancel()
         val request = Request.Builder().url("$serverUrl/room/$roomId").build()
@@ -94,7 +100,21 @@ class VBridgeSocket(
         }
     }
 
-    fun sendTranslation(event: TranslationEvent) {
+    private fun validateServerUrl(): String? {
+        if (serverUrl.contains("REPLACE_WITH_REAL_RELAY")) {
+            return "Relay URL is not configured"
+        }
+
+        if (!serverUrl.startsWith("ws://") && !serverUrl.startsWith("wss://")) {
+            return "Relay URL must begin with ws:// or wss://"
+        }
+
+        return null
+    }
+
+    fun sendTranslation(event: TranslationEvent): Boolean {
+        val activeSocket = socket ?: return false
+
         val json = JSONObject().apply {
             put("type", "translation")
             put("eventId", event.eventId)
@@ -110,14 +130,30 @@ class VBridgeSocket(
             put("latencyMs", event.latencyMs)
             put("confidence", event.confidence ?: JSONObject.NULL)
         }
-        socket?.send(json.toString())
+        return activeSocket.send(json.toString())
     }
 
     fun disconnect() {
         currentRoomId = null
         reconnectJob?.cancel()
-        socket?.close(1000, "App closed")
+        reconnectJob = null
+        socket?.close(1000, "Leaving room")
+        socket = null
+
+        scope.launch {
+            _events.emit(NetworkEvent.Disconnected)
+        }
+    }
+
+    fun destroy() {
+        currentRoomId = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        socket?.cancel()
+        socket = null
         scope.cancel()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
     }
 }
 

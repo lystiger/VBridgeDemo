@@ -213,8 +213,15 @@ class MeetingViewModel(
                     )
                 }
             }
-            is PipelineEvent.SpokenReady -> {
-                if (!event.isLocal) _meetingState.value = MeetingState.PlayingRemoteTts
+            is PipelineEvent.PlaybackStarted -> {
+                if (!event.isLocal) {
+                    _meetingState.value = MeetingState.PlayingRemoteTts
+                }
+            }
+            is PipelineEvent.PlaybackCompleted -> {
+                if (!event.isLocal) {
+                    _meetingState.value = MeetingState.Idle
+                }
             }
             is PipelineEvent.Failed -> {
                 _meetingState.value = MeetingState.Idle
@@ -258,7 +265,7 @@ class MeetingViewModel(
     override fun onCleared() {
         super.onCleared()
         pipeline?.stop()
-        network.disconnect()
+        network.destroy()
         diagnostics.stop()
     }
 }

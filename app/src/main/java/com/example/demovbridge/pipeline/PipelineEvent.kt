@@ -15,10 +15,34 @@ sealed interface PipelineEvent {
         val direction: Direction, val tMtDone: Long,
         val speakerName: String? = null, val isLocal: Boolean = true
     ) : PipelineEvent
-    data class SpokenReady(override val turnId: String, val pcm: ShortArray, val tTtsDone: Long, val isLocal: Boolean = true) : PipelineEvent
+    data class SpokenReady(
+        override val turnId: String,
+        val pcm: ShortArray,
+        val tTtsDone: Long,
+        val isLocal: Boolean = true
+    ) : PipelineEvent
+
+    data class PlaybackStarted(
+        override val turnId: String,
+        val tPlaybackStarted: Long,
+        val isLocal: Boolean = false
+    ) : PipelineEvent
+
+    data class PlaybackCompleted(
+        override val turnId: String,
+        val tPlaybackCompleted: Long,
+        val isLocal: Boolean = false
+    ) : PipelineEvent
+
     data class Failed(
         override val turnId: String, val stage: Stage, val message: String, val usedFallback: Boolean,
     ) : PipelineEvent
 
-    enum class Stage { Vad, Asr, Translation, Tts }
+    enum class Stage {
+        Vad,
+        Asr,
+        Translation,
+        Network,
+        Tts
+    }
 }

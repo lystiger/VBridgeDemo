@@ -149,13 +149,26 @@ class InterpreterPipeline(
                         recentEventIds.remove(recentEventIds.firstOrNull())
                     }
 
-                    _events.emit(PipelineEvent.Translated(
-                        pending.turnId, text, result.text, pending.direction, endTime,
-                        speakerName = localParticipantName,
-                        isLocal = true
-                    ))
-                    
-                    network.sendTranslation(event)
+                    val sent = network.sendTranslation(event)
+                    if (!sent) {
+                        _events.emit(
+                            PipelineEvent.Failed(
+                                turnId = pending.turnId,
+                                stage = PipelineEvent.Stage.Network,
+                                message = "Not connected. Translation was not delivered.",
+                                usedFallback = false
+                            )
+                        )
+                        continue
+                    }
+
+                    _events.emit(
+                        PipelineEvent.Translated(
+                            pending.turnId, text, result.text, pending.direction, endTime,
+                            speakerName = localParticipantName,
+                            isLocal = true
+                        )
+                    )
                     
                 } catch (e: Exception) {
                     _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Translation, e.message ?: "MT Failed", false))
@@ -170,16 +183,35 @@ class InterpreterPipeline(
                     val targetTts = if (event.targetLanguage == "vi") ttsVi else ttsEn
                     
                     val pcm = targetTts.generate(event.translatedText)
-                    _events.emit(PipelineEvent.SpokenReady(event.eventId, pcm, SystemClock.elapsedRealtime(), isLocal = false))
+                    _events.emit(
+                        PipelineEvent.SpokenReady(
+                            turnId = event.eventId,
+                            pcm = pcm,
+                            tTtsDone = SystemClock.elapsedRealtime(),
+                            isLocal = false
+                        )
+                    )
                     
-                    // Safeguard A: Hardware Capture Mutex During Local TTS Playback
                     isMutedForPlayback = true
                     try {
+                        _events.emit(
+                            PipelineEvent.PlaybackStarted(
+                                turnId = event.eventId,
+                                tPlaybackStarted = SystemClock.elapsedRealtime(),
+                                isLocal = false
+                            )
+                        )
                         playback.play(pcm)
                     } finally {
-                        // Cooldown after TTS playback to avoid re-entry
                         delay(500)
                         isMutedForPlayback = false
+                        _events.emit(
+                            PipelineEvent.PlaybackCompleted(
+                                turnId = event.eventId,
+                                tPlaybackCompleted = SystemClock.elapsedRealtime(),
+                                isLocal = false
+                            )
+                        )
                     }
                 } catch (e: Exception) {
                     _events.emit(PipelineEvent.Failed(event.eventId, PipelineEvent.Stage.Tts, e.message ?: "TTS Failed", false))
@@ -205,15 +237,17 @@ class InterpreterPipeline(
                 }
             } finally {
                 if (audioData.isNotEmpty()) {
-                    val pcm = ShortArray(audioData.sumOf { it.size })
-                    var offset = 0
-                    audioData.forEach {
-                        it.copyInto(pcm, offset)
-                        offset += it.size
+                    withContext(NonCancellable) {
+                        val pcm = ShortArray(audioData.sumOf { it.size })
+                        var offset = 0
+                        audioData.forEach {
+                            it.copyInto(pcm, offset)
+                            offset += it.size
+                        }
+                        val endTime = SystemClock.elapsedRealtime()
+                        _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+                        asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
                     }
-                    val endTime = SystemClock.elapsedRealtime()
-                    _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
-                    asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
                 }
             }
         }
