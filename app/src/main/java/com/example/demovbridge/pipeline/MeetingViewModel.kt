@@ -7,6 +7,10 @@ import com.example.demovbridge.asr.SherpaAsr
 import com.example.demovbridge.audio.AudioCapture
 import com.example.demovbridge.audio.AudioPlayback
 import com.example.demovbridge.translation.MlKitTranslator
+import com.example.demovbridge.translation.DelegatingTranslator
+import com.example.demovbridge.translation.LanServerTranslator
+import com.example.demovbridge.net.LanFallbackClient
+import com.example.demovbridge.BuildConfig
 import com.example.demovbridge.tts.SherpaTts
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
@@ -34,6 +38,8 @@ sealed interface MeetingState {
 
 enum class ConnectivityMode { Solo, Room }
 enum class MtEngine { OnDevice, Remote }
+enum class Floor { Open, LocalSpeaking, RemoteSpeaking }
+enum class CaptureMode { HandsOn, HandsFree }
 
 class MeetingViewModel(
     private val context: Context,
@@ -42,6 +48,7 @@ class MeetingViewModel(
     private val assets = context.assets
     private var pipeline: InterpreterPipeline? = null
     private var translator: com.example.demovbridge.translation.Translator? = null
+    private var switchableTranslator: DelegatingTranslator? = null
     private val network = VBridgeSocket()
     private val diagnostics = PipelineDiagnostics(context)
 
@@ -73,6 +80,12 @@ class MeetingViewModel(
 
     private val _mtEngine = MutableStateFlow(MtEngine.OnDevice)
     val mtEngine: StateFlow<MtEngine> = _mtEngine.asStateFlow()
+
+    private val _floor = MutableStateFlow(Floor.Open)
+    val floor: StateFlow<Floor> = _floor.asStateFlow()
+
+    private val _captureMode = MutableStateFlow(CaptureMode.HandsOn)
+    val captureMode: StateFlow<CaptureMode> = _captureMode.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -121,7 +134,12 @@ class MeetingViewModel(
             tokensPath = "asr-en/tokens.txt"
         )
         val mlkitTranslator = MlKitTranslator()
-        this.translator = mlkitTranslator
+        val delegatingTranslator = DelegatingTranslator(
+            onDevice = mlkitTranslator,
+            remote = LanServerTranslator(LanFallbackClient(BuildConfig.VBRIDGE_LAN_URL))
+        )
+        switchableTranslator = delegatingTranslator
+        this.translator = delegatingTranslator
         
         val ttsEnDir = File(context.filesDir, "tts-en")
         ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))
@@ -146,7 +164,7 @@ class MeetingViewModel(
         val playback = AudioPlayback()
 
         pipeline = InterpreterPipeline(
-            capture, vad, asrVi, asrEn, mlkitTranslator, ttsVi, ttsEn, playback, network,
+            capture, vad, asrVi, asrEn, delegatingTranslator, ttsVi, ttsEn, playback, network,
             roomId = config.roomId,
             localParticipantId = config.participantId,
             localParticipantName = config.displayName,
@@ -164,6 +182,7 @@ class MeetingViewModel(
         when (event) {
             is PipelineEvent.SpeechStarted -> {
                 _meetingState.value = MeetingState.Recording
+                _floor.value = Floor.LocalSpeaking
                 currentList.add(
                     ConversationTurn(
                         id = event.turnId,
@@ -190,7 +209,10 @@ class MeetingViewModel(
                 }
             }
             is PipelineEvent.Translated -> {
-                if (event.isLocal) _meetingState.value = MeetingState.Idle
+                if (event.isLocal) {
+                    _meetingState.value = MeetingState.Idle
+                    _floor.value = Floor.Open
+                }
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         translatedText = event.translatedText,
@@ -215,15 +237,18 @@ class MeetingViewModel(
             is PipelineEvent.PlaybackStarted -> {
                 if (!event.isLocal) {
                     _meetingState.value = MeetingState.PlayingRemoteTts
+                    _floor.value = Floor.RemoteSpeaking
                 }
             }
             is PipelineEvent.PlaybackCompleted -> {
                 if (!event.isLocal) {
                     _meetingState.value = MeetingState.Idle
+                    _floor.value = Floor.Open
                 }
             }
             is PipelineEvent.Failed -> {
                 _meetingState.value = MeetingState.Idle
+                _floor.value = Floor.Open
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         status = TurnStatus.Error,
@@ -264,9 +289,13 @@ class MeetingViewModel(
     }
 
     fun setMtEngine(engine: MtEngine) {
+        switchableTranslator?.useRemote = engine == MtEngine.Remote
         _mtEngine.value = engine
-        // Note: In a real app, we might want to recreate the pipeline here
-        // or use a delegating translator. For now we just update the state.
+    }
+
+    fun setCaptureMode(mode: CaptureMode) {
+        if (_meetingState.value == MeetingState.Recording) stopRecording()
+        _captureMode.value = mode
     }
 
     fun retryTurn(turnId: String) {

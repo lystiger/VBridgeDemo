@@ -98,6 +98,7 @@ fun VBridgeConversation(
     turns: List<ConversationTurn>,
     modifier: Modifier = Modifier,
     onRetry: (turnId: String) -> Unit = {},
+    captureHint: String = "Hold the microphone and speak.",
 ) {
     val activeDirection = turns.lastOrNull()?.direction ?: TurnDirection.ViToEn
 
@@ -108,7 +109,7 @@ fun VBridgeConversation(
         )
 
         if (turns.isEmpty()) {
-            EmptyState(modifier = Modifier.fillMaxSize())
+            EmptyState(captureHint = captureHint, modifier = Modifier.fillMaxSize())
             return
         }
 
@@ -355,7 +356,7 @@ private fun TurnErrorRow(
 }
 
 @Composable
-private fun EmptyState(modifier: Modifier = Modifier) {
+private fun EmptyState(captureHint: String, modifier: Modifier = Modifier) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
@@ -364,7 +365,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "Hold the button and speak — the translation will appear here.",
+                text = "$captureHint The translation will appear here.",
                 modifier = Modifier.padding(top = 4.dp, start = 32.dp, end = 32.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,

@@ -22,11 +22,18 @@ android {
 
         val relayUrl = providers.gradleProperty("VBRIDGE_RELAY_URL")
             .getOrElse("wss://REPLACE_WITH_REAL_RELAY")
+        val lanUrl = providers.gradleProperty("VBRIDGE_LAN_URL")
+            .getOrElse("http://REPLACE_WITH_LAN_HOST:8000")
 
         buildConfigField(
             "String",
             "VBRIDGE_RELAY_URL",
             "\"$relayUrl\""
+        )
+        buildConfigField(
+            "String",
+            "VBRIDGE_LAN_URL",
+            "\"$lanUrl\""
         )
     }
 

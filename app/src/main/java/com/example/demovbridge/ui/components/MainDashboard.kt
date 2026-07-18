@@ -2,6 +2,7 @@ package com.example.demovbridge.ui.components
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,12 +17,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.demovbridge.ui.theme.VBridgeTheme
 import com.example.demovbridge.ui.theme.MintGreen
+import com.example.demovbridge.pipeline.CaptureMode
 
 @Composable
 fun ParticipantHeaderCard(
@@ -103,7 +106,11 @@ fun ParticipantHeaderCard(
 @Composable
 fun RecordingMicFAB(
     isRecording: Boolean,
-    onRecordingToggle: () -> Unit
+    enabled: Boolean = true,
+    captureMode: CaptureMode,
+    onToggle: () -> Unit,
+    onPressStart: () -> Unit,
+    onPressEnd: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "mic_pulse")
     val scale by infiniteTransition.animateFloat(
@@ -127,16 +134,41 @@ fun RecordingMicFAB(
             )
         }
         
+        val interactionModifier = if (captureMode == CaptureMode.HandsOn) {
+            Modifier.pointerInput(enabled, captureMode) {
+                detectTapGestures(onPress = {
+                    if (enabled) {
+                        onPressStart()
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            onPressEnd()
+                        }
+                    }
+                })
+            }
+        } else {
+            Modifier
+        }
+
         LargeFloatingActionButton(
-            onClick = onRecordingToggle,
-            containerColor = if (isRecording) MintGreen else MaterialTheme.colorScheme.primary,
-            contentColor = Color.White,
+            onClick = { if (enabled && captureMode == CaptureMode.HandsFree) onToggle() },
+            modifier = Modifier.size(72.dp).then(interactionModifier),
+            containerColor = when {
+                !enabled -> MaterialTheme.colorScheme.surfaceVariant
+                isRecording -> MintGreen
+                else -> MaterialTheme.colorScheme.primary
+            },
+            contentColor = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
             shape = CircleShape,
-            modifier = Modifier.size(72.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Mic,
-                contentDescription = "Record",
+                contentDescription = when {
+                    !enabled -> "Microphone unavailable"
+                    captureMode == CaptureMode.HandsOn -> "Hold to record"
+                    else -> "Toggle recording"
+                },
                 modifier = Modifier.size(32.dp)
             )
         }
