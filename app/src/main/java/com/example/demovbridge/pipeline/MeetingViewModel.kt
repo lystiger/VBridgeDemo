@@ -1,6 +1,7 @@
 package com.example.demovbridge.pipeline
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.demovbridge.asr.WhisperAsr
@@ -13,23 +14,12 @@ import com.example.demovbridge.tts.AndroidTts
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
 import com.example.demovbridge.data.ParticipantConfig
-import com.example.demovbridge.BuildConfig
-import com.example.demovbridge.pipeline.Direction
-import com.example.demovbridge.pipeline.InterpreterPipeline
-import com.example.demovbridge.pipeline.PipelineEvent
 import com.example.demovbridge.ui.conversation.ConversationTurn
 import com.example.demovbridge.ui.conversation.TurnDirection
 import com.example.demovbridge.ui.conversation.TurnStatus
 import com.example.demovbridge.utils.ResourceUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import java.io.File
     
 sealed interface MeetingState {
@@ -46,8 +36,9 @@ class MeetingViewModel(
     private val context: Context,
     private val config: ParticipantConfig
 ) : ViewModel() {
-    private val assets = context.assets
     private var pipeline: InterpreterPipeline? = null
+    private var asr: WhisperAsr? = null
+    private var tts: AndroidTts? = null
     private val network = VBridgeSocket()
     private val diagnostics = PipelineDiagnostics(context)
 
@@ -74,53 +65,91 @@ class MeetingViewModel(
     private val _connectionState = MutableStateFlow<NetworkEvent>(NetworkEvent.Disconnected)
     val connectionState: StateFlow<NetworkEvent> = _connectionState.asStateFlow()
 
+    private val _isOffline = MutableStateFlow(false)
+    val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
+
+    private var pipelineJob: Job? = null
+    private var isInitializing = false
+
     init {
+        startPipeline()
+        
         viewModelScope.launch {
+            diagnostics.telemetry.collect { _telemetry.value = it }
+        }
+
+        viewModelScope.launch {
+            network.events.collect { _connectionState.value = it }
+        }
+    }
+
+    private fun startPipeline() {
+        if (isInitializing) return
+        isInitializing = true
+        _isReady.value = false
+        
+        pipelineJob?.cancel()
+        pipelineJob = viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    initializePipeline()
+                    initializeInternal()
                 }
                 _isReady.value = true
                 
-                launch {
-                    diagnostics.telemetry.collect { _telemetry.value = it }
-                }
-
-                launch {
-                    network.events.collect { _connectionState.value = it }
-                }
-
                 pipeline?.events?.collect { event ->
                     _pipelineEvents.emit(event)
                     handlePipelineEvent(event)
                 }
             } catch (e: Exception) {
-                // Log the error and maybe show an error state in UI
-                e.printStackTrace()
+                Log.e("MeetingViewModel", "Failed to start pipeline", e)
                 _meetingState.value = MeetingState.Error(e.message ?: "Initialization failed")
+            } finally {
+                isInitializing = false
             }
         }
     }
 
-    private suspend fun initializePipeline() {
-        // Connect to network
-        network.connect(config.roomId)
+    private suspend fun initializeInternal() {
+        val isOfflineMode = _isOffline.value
         
-        val capture = AudioCapture()
-        val asr = WhisperAsr(context, File(context.filesDir, "ggml-small-q5_1.bin").absolutePath)
+        if (!isOfflineMode) {
+            network.connect(config.roomId)
+        } else {
+            network.disconnect()
+        }
         
-        val translator: Translator = ServerTranslator()
+        // Ensure model is present
+        val modelFile = File(context.filesDir, "ggml-small-q5_1.bin")
+        if (!modelFile.exists()) {
+            // Try copying from assets if available
+            try {
+                ResourceUtils.copyAssetsDir(context, "models", context.filesDir)
+            } catch (e: Exception) {
+                Log.w("MeetingViewModel", "Could not copy models from assets")
+            }
+        }
+
+        asr?.release()
+        val newAsr = WhisperAsr(context, modelFile.absolutePath)
+        asr = newAsr
         
-        val tts = AndroidTts(context)
+        val translator: Translator = if (isOfflineMode) MlKitTranslator() else ServerTranslator()
+        
+        tts?.shutdown()
+        val newTts = AndroidTts(context)
+        tts = newTts
         
         val playback = AudioPlayback()
+        val capture = AudioCapture()
 
+        pipeline?.stop()
         pipeline = InterpreterPipeline(
-            capture, asr, translator, tts, playback, network,
+            capture, newAsr, translator, newTts, playback, network,
             roomId = config.roomId,
             localParticipantId = config.participantId,
             localParticipantName = config.displayName,
-            diagnostics = diagnostics
+            diagnostics = diagnostics,
+            isOffline = isOfflineMode
         ).apply {
             currentDirection = _currentDirection.value
             start()
@@ -161,7 +190,6 @@ class MeetingViewModel(
             }
             is PipelineEvent.Translated -> {
                 if (event.isLocal) _meetingState.value = MeetingState.Idle
-                // Priority 4: If eventId doesn't exist, it's remote (or we missed SpeechEnded)
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         translatedText = event.translatedText,
@@ -169,7 +197,6 @@ class MeetingViewModel(
                         sourceText = if (currentList[index].sourceText == "...") event.sourceText else currentList[index].sourceText
                     )
                 } else {
-                    // Create remote turn
                     currentList.add(
                         ConversationTurn(
                             id = event.turnId,
@@ -185,14 +212,10 @@ class MeetingViewModel(
                 }
             }
             is PipelineEvent.PlaybackStarted -> {
-                if (!event.isLocal) {
-                    _meetingState.value = MeetingState.PlayingRemoteTts
-                }
+                if (!event.isLocal) _meetingState.value = MeetingState.PlayingRemoteTts
             }
             is PipelineEvent.PlaybackCompleted -> {
-                if (!event.isLocal) {
-                    _meetingState.value = MeetingState.Idle
-                }
+                if (!event.isLocal) _meetingState.value = MeetingState.Idle
             }
             is PipelineEvent.Failed -> {
                 _meetingState.value = MeetingState.Idle
@@ -216,11 +239,11 @@ class MeetingViewModel(
         pipeline?.stopRecording()
     }
 
-    // startPipeline() removed as it is now called during initialization
-
     fun stopPipeline() {
+        pipelineJob?.cancel()
         pipeline?.stop()
         network.disconnect()
+        _isReady.value = false
     }
 
     fun toggleDirection() {
@@ -229,14 +252,30 @@ class MeetingViewModel(
         pipeline?.currentDirection = next
     }
 
+    fun toggleOffline() {
+        if (isInitializing) return
+        _isOffline.value = !_isOffline.value
+        stopPipeline()
+        startPipeline()
+    }
+
     fun retryTurn(turnId: String) {
-        // Implement retry logic if needed, e.g. re-sending to MT or ASR
+        // Retry logic could be added here
+    }
+
+    fun destroy() {
+        pipelineJob?.cancel()
+        pipeline?.stop()
+        network.destroy()
+        diagnostics.stop()
+        tts?.shutdown()
+        viewModelScope.launch {
+            asr?.release()
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
-        pipeline?.stop()
-        network.destroy()
-        diagnostics.stop()
+        destroy()
     }
 }

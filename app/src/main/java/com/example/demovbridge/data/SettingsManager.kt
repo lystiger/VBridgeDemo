@@ -27,6 +27,13 @@ class SettingsManager(private val context: Context) {
         val ROOM_ID = stringPreferencesKey("room_id")
         val SOURCE_LANG = stringPreferencesKey("source_lang")
         val TARGET_LANG = stringPreferencesKey("target_lang")
+        val IS_OFFLINE = androidx.datastore.preferences.core.booleanPreferencesKey("is_offline")
+    }
+
+    val isOffline: Flow<Boolean> = context.dataStore.data.map { it[IS_OFFLINE] ?: false }
+
+    suspend fun setOffline(offline: Boolean) {
+        context.dataStore.edit { it[IS_OFFLINE] = offline }
     }
 
     val config: Flow<ParticipantConfig?> = context.dataStore.data.map { preferences ->

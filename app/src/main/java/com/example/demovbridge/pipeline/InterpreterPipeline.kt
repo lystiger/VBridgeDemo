@@ -32,7 +32,8 @@ class InterpreterPipeline(
     private val roomId: String,
     private val localParticipantId: String,
     private val localParticipantName: String,
-    private val diagnostics: PipelineDiagnostics? = null
+    private val diagnostics: PipelineDiagnostics? = null,
+    val isOffline: Boolean = false
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
@@ -49,7 +50,6 @@ class InterpreterPipeline(
     @Volatile
     private var started = false
     
-    // Safeguard C: Deduplication Cache Layer
     private val recentEventIds = Collections.synchronizedSet(LinkedHashSet<String>())
 
     var currentDirection = Direction.ViToEn
@@ -61,16 +61,12 @@ class InterpreterPipeline(
         if (started) return
         started = true
 
-        // 0. Network Listener -> TTS
+        // 1. Network Listener -> TTS
         scope.launch {
             network.events.collect { event ->
                 if (event is NetworkEvent.TranslationReceived) {
                     val translationEvent = event.event
-                    
-                    // Safeguard D: Ignore self-produced events
                     if (translationEvent.speakerId == localParticipantId) return@collect
-
-                    // Safeguard C: Deduplication
                     if (recentEventIds.contains(translationEvent.eventId)) return@collect
                     
                     if (recentEventIds.size > 200) {
@@ -87,18 +83,19 @@ class InterpreterPipeline(
                         isLocal = false
                     ))
                     
-                    // Remote translation needs to be spoken locally
                     ttsIn.send(translationEvent)
                 }
             }
         }
 
-        // 2. ASR
+        // 2. ASR with Timeout
         scope.launch {
             for (pending in asrIn) {
                 try {
                     val startTime = SystemClock.elapsedRealtime()
-                    val text = asr.transcribe(pending.pcm, pending.direction)
+                    val text = withTimeout(15000) {
+                        asr.transcribe(pending.pcm, pending.direction)
+                    }
                     val endTime = SystemClock.elapsedRealtime()
                     
                     diagnostics?.recordAsrPerformance(
@@ -109,17 +106,19 @@ class InterpreterPipeline(
                     _events.emit(PipelineEvent.Transcribed(pending.turnId, text, pending.direction, endTime))
                     mtIn.send(pending to text)
                 } catch (e: Exception) {
-                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Failed", false))
+                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, e.message ?: "ASR Timeout/Failed", false))
                 }
             }
         }
 
-        // 3. Translation -> Network
+        // 3. Translation -> Network with Timeout
         scope.launch {
             for ((pending, text) in mtIn) {
                 try {
                     val startTime = SystemClock.elapsedRealtime()
-                    val result = translator.translate(text, pending.direction)
+                    val result = withTimeout(10000) {
+                        translator.translate(text, pending.direction)
+                    }
                     val endTime = SystemClock.elapsedRealtime()
                     
                     diagnostics?.recordLatency(result.latencyMs)
@@ -144,18 +143,7 @@ class InterpreterPipeline(
                         recentEventIds.remove(recentEventIds.firstOrNull())
                     }
 
-                    val sent = network.sendTranslation(event)
-                    if (!sent) {
-                        _events.emit(
-                            PipelineEvent.Failed(
-                                turnId = pending.turnId,
-                                stage = PipelineEvent.Stage.Network,
-                                message = "Not connected. Translation was not delivered.",
-                                usedFallback = false
-                            )
-                        )
-                        continue
-                    }
+                    network.sendTranslation(event)
 
                     _events.emit(
                         PipelineEvent.Translated(
@@ -164,9 +152,13 @@ class InterpreterPipeline(
                             isLocal = true
                         )
                     )
+
+                    if (isOffline) {
+                        ttsIn.send(event)
+                    }
                     
                 } catch (e: Exception) {
-                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Translation, e.message ?: "MT Failed", false))
+                    _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Translation, e.message ?: "MT Timeout/Failed", false))
                 }
             }
         }
@@ -191,7 +183,9 @@ class InterpreterPipeline(
                         completion.complete(Unit)
                     }
                     
-                    completion.await()
+                    withTimeoutOrNull(20000) {
+                        completion.await()
+                    }
                     
                     delay(500)
                     isMutedForPlayback = false
@@ -203,6 +197,7 @@ class InterpreterPipeline(
                         )
                     )
                 } catch (e: Exception) {
+                    isMutedForPlayback = false
                     _events.emit(PipelineEvent.Failed(event.eventId, PipelineEvent.Stage.Tts, e.message ?: "TTS Failed", false))
                 }
             }
@@ -237,16 +232,7 @@ class InterpreterPipeline(
                         _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
                         asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
                     } else {
-                        // Safeguard: If no audio was captured (e.g. very short tap),
-                        // we must still transition out of the Recording state.
-                        _events.emit(
-                            PipelineEvent.Failed(
-                                turnId = turnId,
-                                stage = PipelineEvent.Stage.Asr,
-                                message = "No audio captured",
-                                usedFallback = false
-                            )
-                        )
+                        _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, "No audio captured", false))
                     }
                 }
             }

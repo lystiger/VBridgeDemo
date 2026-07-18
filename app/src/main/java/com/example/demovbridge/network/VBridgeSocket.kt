@@ -28,6 +28,8 @@ class VBridgeSocket(
     private val _events = MutableSharedFlow<NetworkEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
 
+    val isConnected: Boolean get() = socket != null
+
     fun connect(roomId: String) {
         validateServerUrl()?.let { message ->
             scope.launch { _events.emit(NetworkEvent.Error(message)) }

@@ -1,5 +1,11 @@
 package com.example.demovbridge.ui.conversation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+
 import android.provider.Settings
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -60,8 +66,8 @@ import java.util.UUID
 // ---------------------------------------------------------------------------
 
 enum class TurnDirection(val sourceLabel: String, val targetLabel: String) {
-    ViToEn(sourceLabel = "Tiếng Việt", targetLabel = "English"),
-    EnToVi(sourceLabel = "English", targetLabel = "Tiếng Việt"),
+    ViToEn(sourceLabel = "VN", targetLabel = "EN"),
+    EnToVi(sourceLabel = "EN", targetLabel = "VN"),
 }
 
 enum class TurnStatus { Transcribing, Translating, Complete, Error }
@@ -124,13 +130,18 @@ private fun rememberMotionDurationMs(base: Int = MOTION_MS): Int {
 fun VBridgeConversation(
     turns: List<ConversationTurn>,
     modifier: Modifier = Modifier,
+    isOffline: Boolean = false,
+    currentDirection: TurnDirection = TurnDirection.ViToEn,
+    participantName: String = "VBridge Partner",
+    onToggleDirection: () -> Unit = {},
     onRetry: (turnId: String) -> Unit = {},
 ) {
-    val activeDirection = turns.lastOrNull()?.direction ?: TurnDirection.ViToEn
-
-    Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
+    Column(modifier = modifier.fillMaxSize()) {
         LanguageSwapHeader(
-            direction = activeDirection,
+            direction = currentDirection,
+            isOffline = isOffline,
+            participantName = participantName,
+            onToggleDirection = onToggleDirection,
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -165,47 +176,78 @@ fun VBridgeConversation(
 @Composable
 private fun LanguageSwapHeader(
     direction: TurnDirection,
+    isOffline: Boolean,
+    participantName: String,
+    onToggleDirection: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val durationMs = rememberMotionDurationMs()
     Surface(
         modifier = modifier,
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
+        color = Color(0xFF075E54), // WhatsApp dark green
+        contentColor = Color.White
     ) {
         Row(
             modifier = Modifier
+                .statusBarsPadding()
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.Center,
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AnimatedContent(
-                targetState = direction,
-                contentAlignment = Alignment.Center,
-                transitionSpec = {
-                    (slideInVertically(tween(durationMs)) { it / 2 } + fadeIn(tween(durationMs)))
-                        .togetherWith(fadeOut(tween(durationMs)))
-                },
-                label = "language-swap",
-            ) { dir ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            // Mock Avatar
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color.Gray.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(participantName.take(1).uppercase(), fontWeight = FontWeight.Bold)
+                
+                // Active dot
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(if (isOffline) Color.Gray else Color.Green)
+                        .border(1.dp, Color.White, CircleShape)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(12.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = participantName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (isOffline) "Offline mode" else "Online - Ready to translate",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.8f)
+                )
+            }
+
+            Surface(
+                onClick = onToggleDirection,
+                color = Color.White.copy(alpha = 0.2f),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                AnimatedContent(
+                    targetState = direction,
+                    transitionSpec = {
+                        (slideInVertically(tween(durationMs)) { it / 2 } + fadeIn(tween(durationMs)))
+                            .togetherWith(fadeOut(tween(durationMs)))
+                    },
+                    label = "language-swap",
+                ) { dir ->
                     Text(
-                        text = dir.sourceLabel,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "  ⇄  ",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = dir.targetLabel,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        text = "${dir.sourceLabel} → ${dir.targetLabel}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
                 }
             }

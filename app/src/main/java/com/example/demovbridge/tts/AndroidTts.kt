@@ -18,7 +18,9 @@ class AndroidTts(context: Context) : TextToSpeech.OnInitListener {
                 onDoneCallback?.invoke()
             }
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {}
+            override fun onError(utteranceId: String?) {
+                onDoneCallback?.invoke()
+            }
         })
     }
 
@@ -31,7 +33,7 @@ class AndroidTts(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun speak(text: String, locale: Locale, onDone: () -> Unit) {
-        if (isReady) {
+        if (isReady && tts != null) {
             onDoneCallback = onDone
             tts?.language = locale
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "vbridge_tts")
