@@ -15,11 +15,13 @@ class AudioCapture(
     private val sampleRate: Int = 16000,
     private val bufferSizeFactor: Int = 2
 ) {
-    private val minBufferSize = AudioRecord.getMinBufferSize(
-        sampleRate,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT
-    )
+    private val minBufferSize by lazy {
+        AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+    }
 
     @SuppressLint("MissingPermission")
     fun capture(): Flow<ShortArray> = flow {

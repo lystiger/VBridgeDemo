@@ -31,6 +31,9 @@ class VBridgeSocket(
     private val _events = MutableSharedFlow<NetworkEvent>(extraBufferCapacity = 64)
     override val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
 
+    override val isRelayActive: Boolean
+        get() = socket != null && currentRoomId != null
+
     fun connect(roomId: String) {
         validateServerUrl()?.let { message ->
             scope.launch { _events.emit(NetworkEvent.Error(message)) }

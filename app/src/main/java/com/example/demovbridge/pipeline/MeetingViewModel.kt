@@ -32,6 +32,9 @@ sealed interface MeetingState {
     data class Error(val message: String) : MeetingState
 }
 
+enum class ConnectivityMode { Solo, Room }
+enum class MtEngine { OnDevice, Remote }
+
 class MeetingViewModel(
     private val context: Context,
     private val config: ParticipantConfig
@@ -64,6 +67,12 @@ class MeetingViewModel(
 
     private val _connectionState = MutableStateFlow<NetworkEvent>(NetworkEvent.Disconnected)
     val connectionState: StateFlow<NetworkEvent> = _connectionState.asStateFlow()
+
+    private val _mode = MutableStateFlow(ConnectivityMode.Room)
+    val mode: StateFlow<ConnectivityMode> = _mode.asStateFlow()
+
+    private val _mtEngine = MutableStateFlow(MtEngine.OnDevice)
+    val mtEngine: StateFlow<MtEngine> = _mtEngine.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -244,6 +253,20 @@ class MeetingViewModel(
         val next = if (_currentDirection.value == Direction.ViToEn) Direction.EnToVi else Direction.ViToEn
         _currentDirection.value = next
         pipeline?.currentDirection = next
+    }
+
+    fun setConnectivityMode(newMode: ConnectivityMode) {
+        when (newMode) {
+            ConnectivityMode.Solo -> network.disconnect()
+            ConnectivityMode.Room -> network.connect(config.roomId)
+        }
+        _mode.value = newMode
+    }
+
+    fun setMtEngine(engine: MtEngine) {
+        _mtEngine.value = engine
+        // Note: In a real app, we might want to recreate the pipeline here
+        // or use a delegating translator. For now we just update the state.
     }
 
     fun retryTurn(turnId: String) {

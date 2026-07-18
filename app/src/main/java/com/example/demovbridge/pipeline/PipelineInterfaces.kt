@@ -27,6 +27,7 @@ sealed interface TransportSendResult {
 
 interface TranslationTransport {
     val events: Flow<NetworkEvent>
+    val isRelayActive: Boolean
     suspend fun send(event: TranslationEvent): TransportSendResult
     fun disconnect()
     fun destroy()

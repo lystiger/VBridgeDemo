@@ -24,6 +24,7 @@ import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.pipeline.Direction
 import com.example.demovbridge.pipeline.MeetingState
 import com.example.demovbridge.pipeline.MeetingViewModel
+import com.example.demovbridge.ui.conversation.VBridgeConversation
 import com.example.demovbridge.ui.theme.VBridgeTheme
 import com.example.demovbridge.ui.components.*
 import kotlinx.coroutines.launch
@@ -266,7 +267,11 @@ fun MainScreen(
                 }
             }
 
-            ChatHistoryList(messages = uiTurns, modifier = Modifier.weight(1f))
+            VBridgeConversation(
+                turns = uiTurns,
+                onRetry = viewModel::retryTurn,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }

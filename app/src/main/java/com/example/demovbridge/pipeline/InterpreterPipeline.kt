@@ -32,7 +32,8 @@ class InterpreterPipeline(
     private val roomId: String,
     private val localParticipantId: String,
     private val localParticipantName: String,
-    private val diagnostics: PipelineDiagnostics? = null
+    private val diagnostics: PipelineDiagnostics? = null,
+    private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime
 ) {
     private var scope: CoroutineScope? = null
     
@@ -79,7 +80,7 @@ class InterpreterPipeline(
 
                     _events.emit(PipelineEvent.Translated(
                         translationEvent.eventId, translationEvent.sourceText, translationEvent.translatedText, 
-                        direction, SystemClock.elapsedRealtime(),
+                        direction, elapsedRealtimeMs(),
                         speakerName = translationEvent.speakerName,
                         isLocal = false
                     ))
@@ -97,10 +98,10 @@ class InterpreterPipeline(
         newScope.launch {
             for (pending in asrIn) {
                 try {
-                    val startTime = SystemClock.elapsedRealtime()
+                    val startTime = elapsedRealtimeMs()
                     val asr = if (pending.direction == Direction.ViToEn) asrVi else asrEn
                     val text = asr.transcribe(pending.audio)
-                    val endTime = SystemClock.elapsedRealtime()
+                    val endTime = elapsedRealtimeMs()
                     
                     if (text.isBlank()) {
                         _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, "Empty transcript", false))
@@ -126,9 +127,9 @@ class InterpreterPipeline(
         newScope.launch {
             for ((pending, text) in mtIn) {
                 try {
-                    val startTime = SystemClock.elapsedRealtime()
+                    val startTime = elapsedRealtimeMs()
                     val result = translator.translate(text, pending.direction)
-                    val endTime = SystemClock.elapsedRealtime()
+                    val endTime = elapsedRealtimeMs()
                     
                     diagnostics?.recordLatency(result.latencyMs)
 
@@ -158,7 +159,7 @@ class InterpreterPipeline(
                     )
 
                     val sendResult = transport.send(event)
-                    if (sendResult is TransportSendResult.Failure) {
+                    if (sendResult is TransportSendResult.Failure && transport.isRelayActive) {
                         _events.emit(
                             PipelineEvent.Failed(
                                 turnId = pending.turnId,
@@ -188,7 +189,7 @@ class InterpreterPipeline(
                         PipelineEvent.SpokenReady(
                             turnId = event.eventId,
                             pcm = audio.pcm,
-                            tTtsDone = SystemClock.elapsedRealtime(),
+                            tTtsDone = elapsedRealtimeMs(),
                             isLocal = false
                         )
                     )
@@ -198,7 +199,7 @@ class InterpreterPipeline(
                         _events.emit(
                             PipelineEvent.PlaybackStarted(
                                 turnId = event.eventId,
-                                tPlaybackStarted = SystemClock.elapsedRealtime(),
+                                tPlaybackStarted = elapsedRealtimeMs(),
                                 isLocal = false
                             )
                         )
@@ -208,7 +209,7 @@ class InterpreterPipeline(
                         _events.emit(
                             PipelineEvent.PlaybackCompleted(
                                 turnId = event.eventId,
-                                tPlaybackCompleted = SystemClock.elapsedRealtime(),
+                                tPlaybackCompleted = elapsedRealtimeMs(),
                                 isLocal = false
                             )
                         )
@@ -234,7 +235,7 @@ class InterpreterPipeline(
             val turnId = UUID.randomUUID().toString()
             val direction = currentDirection
             
-            _events.emit(PipelineEvent.SpeechStarted(turnId, SystemClock.elapsedRealtime()))
+            _events.emit(PipelineEvent.SpeechStarted(turnId, elapsedRealtimeMs()))
             
             vad.reset()
 
@@ -259,7 +260,7 @@ class InterpreterPipeline(
                             it.copyInto(pcm, offset)
                             offset += it.size
                         }
-                        val endTime = SystemClock.elapsedRealtime()
+                        val endTime = elapsedRealtimeMs()
                         _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
                         
                         asrIn.send(PendingAudioTurn(turnId, PcmAudio(pcm), direction, endTime))
@@ -274,6 +275,11 @@ class InterpreterPipeline(
     fun stopRecording() {
         captureJob?.cancel()
         captureJob = null
+    }
+
+    internal suspend fun enqueueAudioTurn(pending: PendingAudioTurn) {
+        check(_started.value) { "Pipeline must be started before enqueueing audio" }
+        asrIn.send(pending)
     }
 
     fun stop() {

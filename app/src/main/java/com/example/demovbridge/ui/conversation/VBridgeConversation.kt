@@ -49,11 +49,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import java.util.UUID
 
 // ---------------------------------------------------------------------------
 // Domain model
@@ -78,28 +73,6 @@ data class ConversationTurn(
     val errorMessage: String? = null,
     val latencyMs: Long? = null
 )
-
-data class ConversationUiState(
-    val turns: List<ConversationTurn> = emptyList()
-)
-
-// ---------------------------------------------------------------------------
-// ViewModel (Legacy/Demo - Not used in MeetingViewModel)
-// ---------------------------------------------------------------------------
-
-class VBridgeViewModel : ViewModel() {
-    private val _uiState = MutableStateFlow(ConversationUiState())
-    val uiState: StateFlow<ConversationUiState> = _uiState.asStateFlow()
-
-    fun retryTurn(turnId: String) {
-        val currentTurns = _uiState.value.turns
-        val updatedTurns = currentTurns.map {
-            if (it.id == turnId) it.copy(status = TurnStatus.Translating, errorMessage = null)
-            else it
-        }
-        _uiState.value = _uiState.value.copy(turns = updatedTurns)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Motion
