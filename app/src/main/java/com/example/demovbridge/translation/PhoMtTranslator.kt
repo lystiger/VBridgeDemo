@@ -11,4 +11,8 @@ class PhoMtTranslator : Translator {
         // TODO: Integrate phomt_student.onnx when delivered
         throw NotImplementedError("PhoMT model not yet integrated. Use MlKitTranslator baseline.")
     }
+
+    override fun close() {
+        // No-op
+    }
 }

@@ -35,11 +35,11 @@ class AudioCapture(
             throw RuntimeException("AudioRecord initialization failed")
         }
 
-        if (NoiseSuppressor.isAvailable()) {
-            NoiseSuppressor.create(audioRecord.audioSessionId)?.let {
-                it.enabled = true
+        val noiseSuppressor = if (NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(audioRecord.audioSessionId)?.apply {
+                enabled = true
             }
-        }
+        } else null
 
         val buffer = ShortArray(480) // 30ms at 16kHz
         try {
@@ -52,11 +52,16 @@ class AudioCapture(
                 if (read > 0) {
                     emit(buffer.copyOf(read))
                 } else if (read < 0) {
-                    break
+                    throw RuntimeException("AudioRecord read error: $read")
                 }
             }
         } finally {
-            audioRecord.stop()
+            noiseSuppressor?.release()
+            try {
+                audioRecord.stop()
+            } catch (e: Exception) {
+                // Ignore stop error if already stopped
+            }
             audioRecord.release()
         }
     }

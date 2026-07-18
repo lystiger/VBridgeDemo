@@ -48,7 +48,7 @@ class MlKitTranslator : Translator {
         else -> TranslateLanguage.ENGLISH
     }
 
-    fun close() {
+    override fun close() {
         translators.values.forEach { it.close() }
         translators.clear()
     }

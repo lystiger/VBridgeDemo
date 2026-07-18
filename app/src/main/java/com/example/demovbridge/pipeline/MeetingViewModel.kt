@@ -11,21 +11,13 @@ import com.example.demovbridge.tts.SherpaTts
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
 import com.example.demovbridge.data.ParticipantConfig
-import com.example.demovbridge.pipeline.Direction
-import com.example.demovbridge.pipeline.InterpreterPipeline
-import com.example.demovbridge.pipeline.PipelineEvent
 import com.example.demovbridge.ui.conversation.ConversationTurn
 import com.example.demovbridge.ui.conversation.TurnDirection
 import com.example.demovbridge.ui.conversation.TurnStatus
 import com.example.demovbridge.utils.ResourceUtils
 import com.example.demovbridge.vad.SherpaVad
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -46,6 +38,7 @@ class MeetingViewModel(
 ) : ViewModel() {
     private val assets = context.assets
     private var pipeline: InterpreterPipeline? = null
+    private var translator: com.example.demovbridge.translation.Translator? = null
     private val network = VBridgeSocket()
     private val diagnostics = PipelineDiagnostics(context)
 
@@ -93,7 +86,6 @@ class MeetingViewModel(
                     handlePipelineEvent(event)
                 }
             } catch (e: Exception) {
-                // Log the error and maybe show an error state in UI
                 e.printStackTrace()
                 _meetingState.value = MeetingState.Error(e.message ?: "Initialization failed")
             }
@@ -101,7 +93,6 @@ class MeetingViewModel(
     }
 
     private fun initializePipeline() {
-        // Connect to network
         network.connect(config.roomId)
         
         val capture = AudioCapture()
@@ -120,7 +111,8 @@ class MeetingViewModel(
             joinerPath = "asr-en/joiner.onnx",
             tokensPath = "asr-en/tokens.txt"
         )
-        val translator = MlKitTranslator()
+        val mlkitTranslator = MlKitTranslator()
+        this.translator = mlkitTranslator
         
         val ttsEnDir = File(context.filesDir, "tts-en")
         ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))
@@ -145,7 +137,7 @@ class MeetingViewModel(
         val playback = AudioPlayback()
 
         pipeline = InterpreterPipeline(
-            capture, vad, asrVi, asrEn, translator, ttsVi, ttsEn, playback, network,
+            capture, vad, asrVi, asrEn, mlkitTranslator, ttsVi, ttsEn, playback, network,
             roomId = config.roomId,
             localParticipantId = config.participantId,
             localParticipantName = config.displayName,
@@ -190,15 +182,13 @@ class MeetingViewModel(
             }
             is PipelineEvent.Translated -> {
                 if (event.isLocal) _meetingState.value = MeetingState.Idle
-                // Priority 4: If eventId doesn't exist, it's remote (or we missed SpeechEnded)
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         translatedText = event.translatedText,
                         status = TurnStatus.Complete,
-                        sourceText = if (currentList[index].sourceText == "...") event.sourceText else currentList[index].sourceText
+                        sourceText = if (currentList[index].sourceText == "..." || currentList[index].sourceText.isBlank()) event.sourceText else currentList[index].sourceText
                     )
                 } else {
-                    // Create remote turn
                     currentList.add(
                         ConversationTurn(
                             id = event.turnId,
@@ -245,8 +235,6 @@ class MeetingViewModel(
         pipeline?.stopRecording()
     }
 
-    // startPipeline() removed as it is now called during initialization
-
     fun stopPipeline() {
         pipeline?.stop()
         network.disconnect()
@@ -259,12 +247,13 @@ class MeetingViewModel(
     }
 
     fun retryTurn(turnId: String) {
-        // Implement retry logic if needed, e.g. re-sending to MT or ASR
+        // Implement retry logic if needed
     }
 
     override fun onCleared() {
         super.onCleared()
         pipeline?.stop()
+        translator?.close()
         network.destroy()
         diagnostics.stop()
     }

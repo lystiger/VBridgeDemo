@@ -39,10 +39,13 @@ sealed interface PipelineEvent {
     ) : PipelineEvent
 
     enum class Stage {
+        Capture,
         Vad,
         Asr,
         Translation,
         Network,
-        Tts
+        Tts,
+        Playback,
+        Cancelled
     }
 }

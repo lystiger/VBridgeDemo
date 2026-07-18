@@ -11,9 +11,12 @@ import okhttp3.*
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+import com.example.demovbridge.pipeline.TranslationTransport
+import com.example.demovbridge.pipeline.TransportSendResult
+
 class VBridgeSocket(
     private val serverUrl: String = BuildConfig.VBRIDGE_RELAY_URL
-) {
+) : TranslationTransport {
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -26,7 +29,7 @@ class VBridgeSocket(
     private var reconnectDelay = 1000L
 
     private val _events = MutableSharedFlow<NetworkEvent>(extraBufferCapacity = 64)
-    val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
+    override val events: SharedFlow<NetworkEvent> = _events.asSharedFlow()
 
     fun connect(roomId: String) {
         validateServerUrl()?.let { message ->
@@ -36,7 +39,8 @@ class VBridgeSocket(
 
         currentRoomId = roomId
         reconnectJob?.cancel()
-        val request = Request.Builder().url("$serverUrl/room/$roomId").build()
+        val normalizedBase = serverUrl.removeSuffix("/")
+        val request = Request.Builder().url("$normalizedBase/room/$roomId").build()
         
         scope.launch { _events.emit(NetworkEvent.Connecting) }
         
@@ -64,7 +68,7 @@ class VBridgeSocket(
                             startedAt = json.getLong("startedAt"),
                             endedAt = json.getLong("endedAt"),
                             latencyMs = json.getLong("latencyMs"),
-                            confidence = json.optDouble("confidence").let { if (it.isNaN()) null else it.toFloat() }
+                            confidence = if (json.isNull("confidence")) null else json.optDouble("confidence", Double.NaN).let { if (it.isNaN()) null else it.toFloat() }
                         )
                         
                         // Validate roomId
@@ -112,8 +116,8 @@ class VBridgeSocket(
         return null
     }
 
-    fun sendTranslation(event: TranslationEvent): Boolean {
-        val activeSocket = socket ?: return false
+    override suspend fun send(event: TranslationEvent): TransportSendResult {
+        val activeSocket = socket ?: return TransportSendResult.Failure("Not connected")
 
         val json = JSONObject().apply {
             put("type", "translation")
@@ -130,10 +134,11 @@ class VBridgeSocket(
             put("latencyMs", event.latencyMs)
             put("confidence", event.confidence ?: JSONObject.NULL)
         }
-        return activeSocket.send(json.toString())
+        val sent = activeSocket.send(json.toString())
+        return if (sent) TransportSendResult.Success else TransportSendResult.Failure("WebSocket send failed")
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         currentRoomId = null
         reconnectJob?.cancel()
         reconnectJob = null
@@ -145,7 +150,7 @@ class VBridgeSocket(
         }
     }
 
-    fun destroy() {
+    override fun destroy() {
         currentRoomId = null
         reconnectJob?.cancel()
         reconnectJob = null

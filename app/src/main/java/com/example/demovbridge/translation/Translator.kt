@@ -14,4 +14,6 @@ interface Translator {
         text: String,
         direction: Direction
     ): TranslationResult
+
+    fun close()
 }
