@@ -1,12 +1,11 @@
 package com.example.demovbridge.pipeline
 
 import android.os.SystemClock
-import com.example.demovbridge.asr.SherpaAsr
+import com.example.demovbridge.asr.WhisperAsr
 import com.example.demovbridge.audio.AudioCapture
 import com.example.demovbridge.audio.AudioPlayback
 import com.example.demovbridge.translation.Translator
-import com.example.demovbridge.tts.SherpaTts
-import com.example.demovbridge.vad.SherpaVad
+import com.example.demovbridge.tts.AndroidTts
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
 import com.example.demovbridge.network.TranslationEvent
@@ -25,12 +24,9 @@ data class PendingAudioTurn(
 
 class InterpreterPipeline(
     private val capture: AudioCapture,
-    private val vad: SherpaVad,
-    private val asrVi: SherpaAsr,
-    private val asrEn: SherpaAsr,
+    private val asr: WhisperAsr,
     private val translator: Translator,
-    private val ttsVi: SherpaTts,
-    private val ttsEn: SherpaTts,
+    private val tts: AndroidTts,
     private val playback: AudioPlayback,
     private val network: VBridgeSocket,
     private val roomId: String,
@@ -102,8 +98,7 @@ class InterpreterPipeline(
             for (pending in asrIn) {
                 try {
                     val startTime = SystemClock.elapsedRealtime()
-                    val asr = if (pending.direction == Direction.ViToEn) asrVi else asrEn
-                    val text = asr.transcribe(pending.pcm)
+                    val text = asr.transcribe(pending.pcm, pending.direction)
                     val endTime = SystemClock.elapsedRealtime()
                     
                     diagnostics?.recordAsrPerformance(
@@ -176,43 +171,37 @@ class InterpreterPipeline(
             }
         }
 
-        // 4. TTS -> Playback
+        // 4. TTS
         scope.launch {
             for (event in ttsIn) {
                 try {
-                    val targetTts = if (event.targetLanguage == "vi") ttsVi else ttsEn
+                    val locale = if (event.targetLanguage == "vi") Locale("vi") else Locale.ENGLISH
                     
-                    val pcm = targetTts.generate(event.translatedText)
+                    isMutedForPlayback = true
                     _events.emit(
-                        PipelineEvent.SpokenReady(
+                        PipelineEvent.PlaybackStarted(
                             turnId = event.eventId,
-                            pcm = pcm,
-                            tTtsDone = SystemClock.elapsedRealtime(),
+                            tPlaybackStarted = SystemClock.elapsedRealtime(),
                             isLocal = false
                         )
                     )
-                    
-                    isMutedForPlayback = true
-                    try {
-                        _events.emit(
-                            PipelineEvent.PlaybackStarted(
-                                turnId = event.eventId,
-                                tPlaybackStarted = SystemClock.elapsedRealtime(),
-                                isLocal = false
-                            )
-                        )
-                        playback.play(pcm)
-                    } finally {
-                        delay(500)
-                        isMutedForPlayback = false
-                        _events.emit(
-                            PipelineEvent.PlaybackCompleted(
-                                turnId = event.eventId,
-                                tPlaybackCompleted = SystemClock.elapsedRealtime(),
-                                isLocal = false
-                            )
-                        )
+
+                    val completion = CompletableDeferred<Unit>()
+                    tts.speak(event.translatedText, locale) {
+                        completion.complete(Unit)
                     }
+                    
+                    completion.await()
+                    
+                    delay(500)
+                    isMutedForPlayback = false
+                    _events.emit(
+                        PipelineEvent.PlaybackCompleted(
+                            turnId = event.eventId,
+                            tPlaybackCompleted = SystemClock.elapsedRealtime(),
+                            isLocal = false
+                        )
+                    )
                 } catch (e: Exception) {
                     _events.emit(PipelineEvent.Failed(event.eventId, PipelineEvent.Stage.Tts, e.message ?: "TTS Failed", false))
                 }
@@ -253,7 +242,7 @@ class InterpreterPipeline(
                         _events.emit(
                             PipelineEvent.Failed(
                                 turnId = turnId,
-                                stage = PipelineEvent.Stage.Vad,
+                                stage = PipelineEvent.Stage.Asr,
                                 message = "No audio captured",
                                 usedFallback = false
                             )

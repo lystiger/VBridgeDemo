@@ -17,7 +17,15 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-O3"
+                arguments += "-DGGML_OPENMP=OFF"
+            }
         }
 
         val relayUrl = providers.gradleProperty("VBRIDGE_RELAY_URL")
@@ -29,10 +37,13 @@ android {
             "\"$relayUrl\""
         )
 
+        val mtUrl = providers.gradleProperty("VBRIDGE_MT_URL")
+            .getOrElse("http://192.168.5.124:8000")
+
         buildConfigField(
-            "Boolean",
-            "USE_ONDEVICE_MT",
-            "true"
+            "String",
+            "VBRIDGE_MT_URL",
+            "\"$mtUrl\""
         )
     }
 
@@ -45,6 +56,13 @@ android {
             )
         }
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+    ndkVersion = "26.3.11579264"
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -56,15 +74,8 @@ android {
         compose = true
         buildConfig = true
     }
-    packaging {
-        jniLibs {
-            pickFirsts.add("**/libonnxruntime.so")
-            pickFirsts.add("**/libsherpa-onnx-jni.so")
-        }
-        resources {
-            pickFirsts.add("**/libonnxruntime.so")
-            pickFirsts.add("**/libsherpa-onnx-jni.so")
-        }
+    androidResources {
+        noCompress += "bin"
     }
 }
 
@@ -81,14 +92,11 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.compose.foundation)
     
-    implementation(libs.sherpa.onnx)
     implementation(libs.mlkit.translate)
     implementation(libs.play.services.tasks)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.onnxruntime.android)
-    implementation(libs.djl.sentencepiece)
     
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -1,15 +1,17 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+# Android
+.gradle/
+.idea/
 local.properties
+
+# Build outputs
+build/
+app/build/
+
+# Native build outputs
+.cxx/
+externalNativeBuild/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/

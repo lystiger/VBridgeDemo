@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 data class TurnLatency(
     val turnId: String,
-    val vadMs: Long = 0,
+    val captureMs: Long = 0,
     val asrMs: Long = 0,
     val mtMs: Long = 0,
     val ttsMs: Long = 0,
@@ -30,8 +30,8 @@ class LatencyTracer {
                 data["mt"] = event.tMtDone
                 updateLatencies(event.turnId)
             }
-            is PipelineEvent.SpokenReady -> {
-                data["tts"] = event.tTtsDone
+            is PipelineEvent.PlaybackStarted -> {
+                data["tts"] = event.tPlaybackStarted
                 updateLatencies(event.turnId)
             }
             else -> {}
@@ -48,7 +48,7 @@ class LatencyTracer {
 
         val latency = TurnLatency(
             turnId = turnId,
-            vadMs = if (start > 0 && end > 0) end - start else 0,
+            captureMs = if (start > 0 && end > 0) end - start else 0,
             asrMs = if (end > 0 && asr > 0) asr - end else 0,
             mtMs = if (asr > 0 && mt > 0) mt - asr else 0,
             ttsMs = if (mt > 0 && tts > 0) tts - mt else 0,
