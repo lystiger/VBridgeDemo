@@ -7,10 +7,13 @@ import com.example.demovbridge.asr.SherpaAsr
 import com.example.demovbridge.audio.AudioCapture
 import com.example.demovbridge.audio.AudioPlayback
 import com.example.demovbridge.translation.MlKitTranslator
+import com.example.demovbridge.translation.PhoMtOnnxTranslator
+import com.example.demovbridge.translation.Translator
 import com.example.demovbridge.tts.SherpaTts
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
 import com.example.demovbridge.data.ParticipantConfig
+import com.example.demovbridge.BuildConfig
 import com.example.demovbridge.pipeline.Direction
 import com.example.demovbridge.pipeline.InterpreterPipeline
 import com.example.demovbridge.pipeline.PipelineEvent
@@ -100,7 +103,7 @@ class MeetingViewModel(
         }
     }
 
-    private fun initializePipeline() {
+    private suspend fun initializePipeline() {
         // Connect to network
         network.connect(config.roomId)
         
@@ -120,7 +123,13 @@ class MeetingViewModel(
             joinerPath = "asr-en/joiner.onnx",
             tokensPath = "asr-en/tokens.txt"
         )
-        val translator = MlKitTranslator()
+        val translator: Translator = if (BuildConfig.USE_ONDEVICE_MT) {
+            val p = PhoMtOnnxTranslator(context)
+            p.warmUp()
+            p
+        } else {
+            MlKitTranslator()
+        }
         
         val ttsEnDir = File(context.filesDir, "tts-en")
         ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))

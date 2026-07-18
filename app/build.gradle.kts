@@ -28,6 +28,12 @@ android {
             "VBRIDGE_RELAY_URL",
             "\"$relayUrl\""
         )
+
+        buildConfigField(
+            "Boolean",
+            "USE_ONDEVICE_MT",
+            "true"
+        )
     }
 
     buildTypes {
@@ -51,6 +57,10 @@ android {
         buildConfig = true
     }
     packaging {
+        jniLibs {
+            pickFirsts.add("**/libonnxruntime.so")
+            pickFirsts.add("**/libsherpa-onnx-jni.so")
+        }
         resources {
             pickFirsts.add("**/libonnxruntime.so")
             pickFirsts.add("**/libsherpa-onnx-jni.so")
@@ -77,6 +87,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.onnxruntime.android)
+    implementation(libs.djl.sentencepiece)
     
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

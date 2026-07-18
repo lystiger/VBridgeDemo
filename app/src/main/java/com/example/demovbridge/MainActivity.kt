@@ -38,6 +38,10 @@ import com.example.demovbridge.ui.conversation.VBridgeConversation
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.util.UUID
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import java.io.File
+import android.util.Log
 
 class MainActivity : ComponentActivity() {
 
@@ -55,6 +59,34 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Phase 0 Smoke Test: Check for ORT native library conflicts
+        try {
+            if (BuildConfig.USE_ONDEVICE_MT) {
+                // 1. Check OrtEnvironment
+                val env = OrtEnvironment.getEnvironment()
+                Log.i("VBridgeORT", "ORT Environment initialized successfully: $env")
+                
+                // 2. Try to introspect one model if assets are present
+                // Note: We don't copy here, just check if already copied by a previous run or Phase 1
+                val viEnDir = File(applicationContext.filesDir, "mt-vi-en")
+                val encoderFile = File(viEnDir, "encoder_model.onnx")
+                if (encoderFile.exists()) {
+                    val session = env.createSession(encoderFile.path)
+                    Log.i("VBridgeORT", "Smoke test session opened successfully")
+                    Log.i("VBridgeORT", "Encoder Inputs: ${session.inputNames}")
+                    Log.i("VBridgeORT", "Encoder Outputs: ${session.outputNames}")
+                    session.close()
+                } else {
+                    Log.w("VBridgeORT", "Encoder model not found in filesDir yet. Skipping session smoke test. Proceed to Phase 1.")
+                }
+            }
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e("VBridgeORT", "ORT NATIVE LINK ERROR! JNI conflict between Sherpa and ORT.", e)
+        } catch (e: Throwable) {
+            Log.e("VBridgeORT", "ORT Initialization Failed!", e)
+        }
+
         settingsManager = SettingsManager(applicationContext)
 
         microphonePermissionGranted =
