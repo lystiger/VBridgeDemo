@@ -6,29 +6,26 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.demovbridge.benchmark.LatencyTracer
-import com.example.demovbridge.benchmark.TurnLatency
 import com.example.demovbridge.data.ParticipantConfig
 import com.example.demovbridge.data.SettingsManager
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.pipeline.Direction
 import com.example.demovbridge.pipeline.MeetingState
 import com.example.demovbridge.pipeline.MeetingViewModel
-import com.example.demovbridge.pipeline.PipelineTelemetry
-import com.example.demovbridge.ui.conversation.VBridgeConversation
-import kotlinx.coroutines.flow.collect
+import com.example.demovbridge.ui.theme.VBridgeTheme
+import com.example.demovbridge.ui.components.*
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -57,7 +54,7 @@ class MainActivity : ComponentActivity() {
             ) == PackageManager.PERMISSION_GRANTED
 
         setContent {
-            MaterialTheme {
+            VBridgeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -95,11 +92,15 @@ class MainActivity : ComponentActivity() {
 
                                 MainScreen(
                                     viewModel = vm,
-                                    latencyTracer = latencyTracer,
                                     onRequestMicrophonePermission = {
                                         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     },
-                                    hasPermission = microphonePermissionGranted
+                                    hasPermission = microphonePermissionGranted,
+                                    onBack = {
+                                        vm.stopPipeline()
+                                        viewModel = null
+                                        currentConfig = null
+                                    }
                                 )
                             }
                         }
@@ -118,24 +119,27 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
     var name by remember { mutableStateOf("") }
-    var room by remember { mutableStateOf("") }
+    var room by remember { mutableStateOf("test-room") }
     var language by remember { mutableStateOf("vi") }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("VBridge Setup", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(32.dp))
+        Text("VBridge", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text("Real-time Translation", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
+        
+        Spacer(modifier = Modifier.height(48.dp))
         
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
             label = { Text("Display Name") },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
         )
         Spacer(modifier = Modifier.height(16.dp))
         
@@ -143,7 +147,8 @@ fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
             value = room,
             onValueChange = { room = it },
             label = { Text("Room Code") },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
         )
         Spacer(modifier = Modifier.height(24.dp))
         
@@ -172,9 +177,10 @@ fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
                     )
                 }
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp)
         ) {
-            Text("Join Room")
+            Text("JOIN CONVERSATION", fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -185,24 +191,7 @@ fun LoadingScreen() {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator()
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Initializing AI Models...", style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-@Composable
-fun PermissionWarning() {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.1f))
-    ) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Microphone permission is required for translation.",
-                color = Color.Red,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f)
-            )
+            Text("Initializing VBridge...", style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -210,156 +199,74 @@ fun PermissionWarning() {
 @Composable
 fun MainScreen(
     viewModel: MeetingViewModel, 
-    latencyTracer: LatencyTracer,
     onRequestMicrophonePermission: () -> Unit,
-    hasPermission: Boolean
+    hasPermission: Boolean,
+    onBack: () -> Unit
 ) {
     val uiTurns by viewModel.turns.collectAsState()
     val direction by viewModel.currentDirection.collectAsState()
-    val latencies by latencyTracer.latencies.collectAsState()
-    val telemetry by viewModel.telemetry.collectAsState()
     val meetingState by viewModel.meetingState.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        ConnectionStatusBar(connectionState, meetingState)
-        TelemetryHud(telemetry, latencies.lastOrNull())
+    val (connText, connColor) = when (connectionState) {
+        is NetworkEvent.Connected -> "Connected" to Color(0xFF22C55E)
+        is NetworkEvent.Connecting -> "Connecting..." to Color(0xFFFFC107)
+        is NetworkEvent.Disconnected -> "Offline" to Color.Gray
+        is NetworkEvent.Error -> "Error" to Color.Red
+        else -> "Disconnected" to Color.Gray
+    }
 
-        if (!hasPermission) {
-            PermissionWarning()
-        }
-
-        VBridgeConversation(
-            turns = uiTurns,
-            onRetry = viewModel::retryTurn,
-            modifier = Modifier.weight(1f)
-        )
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            tonalElevation = 8.dp,
-            shadowElevation = 8.dp
-        ) {
-            Row(
-                modifier = Modifier
-                    .padding(16.dp)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(onClick = { viewModel.toggleDirection() }) {
-                    Text(if (direction == Direction.ViToEn) "VN → EN" else "EN → VN")
-                }
-
-                val isRecording = meetingState == MeetingState.Recording
-                val isProcessing = meetingState is MeetingState.ProcessingAsr || meetingState is MeetingState.Translating
-                val isPlaying = meetingState == MeetingState.PlayingRemoteTts
-                
-                Button(
-                    onClick = { },
-                    modifier = Modifier
-                        .height(64.dp)
-                        .weight(1f)
-                        .padding(horizontal = 16.dp)
-                        .pointerInput(meetingState) {
-                            if (isPlaying) return@pointerInput
-                            detectTapGestures(
-                                onPress = {
-                                    if (!hasPermission) {
-                                        onRequestMicrophonePermission()
-                                    } else {
-                                        viewModel.startRecording()
-                                        tryAwaitRelease()
-                                        viewModel.stopRecording()
-                                    }
-                                }
-                            )
-                        },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = when {
-                            isRecording -> Color.Red
-                            isProcessing -> Color.Gray
-                            isPlaying -> Color.Blue.copy(alpha = 0.5f)
-                            else -> MaterialTheme.colorScheme.primary
+    Scaffold(
+        topBar = {
+            VBridgeTopBar(
+                connectionText = connText,
+                connectionColor = connColor,
+                onBackClick = onBack
+            )
+        },
+        bottomBar = { VBridgeBottomNav() },
+        floatingActionButton = {
+            RecordingMicFAB(
+                isRecording = meetingState == MeetingState.Recording,
+                onRecordingToggle = {
+                    if (!hasPermission) {
+                        onRequestMicrophonePermission()
+                    } else {
+                        if (meetingState == MeetingState.Recording) {
+                            viewModel.stopRecording()
+                        } else {
+                            viewModel.startRecording()
                         }
-                    ),
-                    enabled = !isPlaying
+                    }
+                }
+            )
+        },
+        floatingActionButtonPosition = FabPosition.Center
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+        ) {
+            ParticipantHeaderCard(
+                direction = if (direction == Direction.ViToEn) "VN → EN" else "EN → VN",
+                onSwap = { viewModel.toggleDirection() }
+            )
+            
+            if (!hasPermission) {
+                Card(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
                     Text(
-                        when {
-                            isRecording -> "RELEASE TO SEND"
-                            isProcessing -> "PROCESSING..."
-                            isPlaying -> "REMOTE SPEAKING"
-                            else -> "HOLD TO SPEAK"
-                        }
+                        "Microphone permission required.",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
                 }
             }
-        }
-    }
-}
 
-@Composable
-fun ConnectionStatusBar(connection: NetworkEvent, meeting: MeetingState) {
-    val (text, color) = when (connection) {
-        is NetworkEvent.Connected -> "Connected" to Color(0xFF4CAF50)
-        is NetworkEvent.Connecting -> "Connecting..." to Color(0xFFFFC107)
-        is NetworkEvent.Disconnected -> "Disconnected" to Color.Red
-        is NetworkEvent.Error -> "Network Error" to Color.Red
-        else -> "Disconnected" to Color.Red
-    }
-
-    Surface(
-        color = color.copy(alpha = 0.1f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(vertical = 4.dp, horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(8.dp).background(color, shape = MaterialTheme.shapes.small))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(text, style = MaterialTheme.typography.labelSmall, color = color)
-            }
-            
-            if (meeting is MeetingState.Error) {
-                Text(meeting.message, style = MaterialTheme.typography.labelSmall, color = Color.Red)
-            }
-        }
-    }
-}
-
-@Composable
-fun TelemetryHud(telemetry: PipelineTelemetry, latestLatency: TurnLatency?) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (telemetry.systemPssMemoryMb > 400) Color.Red.copy(alpha = 0.2f) 
-                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("RTF: %.2f".format(telemetry.currentRtf), style = MaterialTheme.typography.labelSmall)
-                Text("P95: ${telemetry.p95LatencyMs}ms", style = MaterialTheme.typography.labelSmall)
-                Text("RAM: ${telemetry.systemPssMemoryMb}MB", 
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (telemetry.systemPssMemoryMb > 400) Color.Red else Color.Unspecified
-                )
-                Text("Threads: ${telemetry.activeThreadCount}", style = MaterialTheme.typography.labelSmall)
-            }
-            if (latestLatency != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Last Latency: E2E: ${latestLatency.e2eMs}ms | VAD: ${latestLatency.vadMs}ms | ASR: ${latestLatency.asrMs}ms | MT: ${latestLatency.mtMs}ms",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
-                )
-            }
+            ChatHistoryList(messages = uiTurns, modifier = Modifier.weight(1f))
         }
     }
 }
