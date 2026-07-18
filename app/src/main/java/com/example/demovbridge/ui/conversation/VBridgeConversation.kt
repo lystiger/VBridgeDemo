@@ -14,15 +14,20 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -38,17 +43,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.demovbridge.ui.components.*
+import com.example.demovbridge.ui.theme.*
 
 // ---------------------------------------------------------------------------
 // Domain model
@@ -99,24 +110,22 @@ fun VBridgeConversation(
     modifier: Modifier = Modifier,
     onRetry: (turnId: String) -> Unit = {},
     captureHint: String = "Hold the microphone and speak.",
+    isListening: Boolean = false
 ) {
-    val activeDirection = turns.lastOrNull()?.direction ?: TurnDirection.ViToEn
-
-    Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
-        LanguageSwapHeader(
-            direction = activeDirection,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
+    Column(modifier = modifier.fillMaxSize()) {
         if (turns.isEmpty()) {
-            EmptyState(captureHint = captureHint, modifier = Modifier.fillMaxSize())
+            EmptyState(
+                captureHint = captureHint,
+                isListening = isListening,
+                modifier = Modifier.fillMaxSize()
+            )
             return
         }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             items(turns, key = { it.id }) { turn ->
                 @OptIn(ExperimentalFoundationApi::class)
@@ -198,7 +207,7 @@ private fun TranslationTurnCard(
     modifier: Modifier = Modifier,
 ) {
     val durationMs = rememberMotionDurationMs()
-    val fromLeadingEdge = turn.isLocal
+    val fromLocal = turn.isLocal
 
     val transitionState = remember {
         MutableTransitionState(initialState = false).apply { targetState = true }
@@ -206,57 +215,63 @@ private fun TranslationTurnCard(
 
     Box(
         modifier = modifier.fillMaxWidth(),
-        contentAlignment = if (fromLeadingEdge) Alignment.CenterEnd else Alignment.CenterStart,
+        contentAlignment = if (fromLocal) Alignment.CenterStart else Alignment.CenterEnd,
     ) {
         AnimatedVisibility(
             visibleState = transitionState,
-            enter = slideInHorizontally(tween(durationMs)) { fullWidth ->
-                if (fromLeadingEdge) fullWidth / 3 else -fullWidth / 3
-            } + fadeIn(tween(durationMs)),
+            enter = slideInVertically(tween(durationMs)) { it / 4 } + fadeIn(tween(durationMs)),
         ) {
-            Card(
+            val accentColor = if (fromLocal) PrimaryCyan else IndigoAccent
+            
+            Surface(
                 modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .wrapContentWidth(if (fromLeadingEdge) Alignment.End else Alignment.Start),
-                shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    topEnd = 16.dp,
-                    bottomStart = if (fromLeadingEdge) 16.dp else 4.dp,
-                    bottomEnd = if (fromLeadingEdge) 4.dp else 16.dp,
-                ),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (fromLeadingEdge) MaterialTheme.colorScheme.primaryContainer 
-                                     else MaterialTheme.colorScheme.secondaryContainer,
-                ),
+                    .fillMaxWidth(0.9f)
+                    .border(
+                        1.dp, 
+                        accentColor.copy(alpha = 0.4f), 
+                        RoundedCornerShape(16.dp)
+                    )
+                    .clip(RoundedCornerShape(16.dp)),
+                color = SurfaceSubtle,
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                // Top accent line
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color.Transparent, accentColor.copy(alpha = 0.4f), Color.Transparent)
+                            )
+                        )
+                )
+
+                Column(modifier = Modifier.padding(20.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (turn.isLocal) "You" else turn.speakerName,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (fromLeadingEdge) MaterialTheme.colorScheme.primary 
-                                     else MaterialTheme.colorScheme.secondary
+                            text = (if (turn.isLocal) "VIETNAMESE" else "ENGLISH") + " · " + (if (turn.isLocal) "YOU" else turn.speakerName.uppercase()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            fontWeight = FontWeight.Bold
                         )
-                        DirectionChip(direction = turn.direction)
                     }
 
                     Text(
                         text = turn.sourceText,
-                        modifier = Modifier.padding(top = 8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = TextPrimary,
                     )
 
                     TurnBody(
                         turn = turn,
                         durationMs = durationMs,
                         onRetry = onRetry,
-                        modifier = Modifier.padding(top = 4.dp),
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
             }
@@ -264,15 +279,7 @@ private fun TranslationTurnCard(
     }
 }
 
-@Composable
-private fun DirectionChip(direction: TurnDirection) {
-    Text(
-        text = "${direction.sourceLabel} → ${direction.targetLabel}",
-        style = MaterialTheme.typography.labelSmall,
-        fontSize = 10.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-    )
-}
+// ... existing PreviewMixed ...
 
 @Composable
 private fun TurnBody(
@@ -288,13 +295,13 @@ private fun TurnBody(
         modifier = modifier,
     ) { status ->
         when (status) {
-            TurnStatus.Transcribing -> TranslatingIndicator(label = "Transcribing…")
-            TurnStatus.Translating -> TranslatingIndicator(label = "Translating…")
+            TurnStatus.Transcribing -> StatusBadge("Transcribing", StatusProcessing)
+            TurnStatus.Translating -> StatusBadge("Translating", StatusProcessing)
             TurnStatus.Complete -> Text(
                 text = turn.translatedText,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = BrightCyan,
             )
             TurnStatus.Error -> TurnErrorRow(
                 message = turn.errorMessage ?: "Translation failed",
@@ -307,37 +314,6 @@ private fun TurnBody(
 // ---------------------------------------------------------------------------
 // Loading + error + empty states
 // ---------------------------------------------------------------------------
-
-@Composable
-private fun TranslatingIndicator(label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        val transition = rememberInfiniteTransition(label = "dots")
-        repeat(3) { index ->
-            val alpha by transition.animateFloat(
-                initialValue = 0.25f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 600, delayMillis = index * 150),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "dot-$index",
-            )
-            Text(
-                text = "●",
-                fontSize = 8.sp,
-                modifier = Modifier
-                    .padding(end = 4.dp)
-                    .alpha(alpha),
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
 
 @Composable
 private fun TurnErrorRow(
@@ -356,20 +332,26 @@ private fun TurnErrorRow(
 }
 
 @Composable
-private fun EmptyState(captureHint: String, modifier: Modifier = Modifier) {
+private fun EmptyState(
+    captureHint: String, 
+    isListening: Boolean,
+    modifier: Modifier = Modifier
+) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            VBridgeWaveform(isListening = isListening)
+            Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "No turns yet",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                text = if (isListening) "Listening…" else "Hold to speak",
+                style = MaterialTheme.typography.headlineMedium,
+                color = TextPrimary,
             )
             Text(
-                text = "$captureHint The translation will appear here.",
-                modifier = Modifier.padding(top = 4.dp, start = 32.dp, end = 32.dp),
+                text = captureHint,
+                modifier = Modifier.padding(top = 8.dp, start = 48.dp, end = 48.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = TextSecondary,
             )
         }
     }

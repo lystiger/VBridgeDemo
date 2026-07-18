@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -30,8 +31,9 @@ import com.example.demovbridge.pipeline.CaptureMode
 import com.example.demovbridge.pipeline.ConnectivityMode
 import com.example.demovbridge.pipeline.MtEngine
 import com.example.demovbridge.ui.conversation.VBridgeConversation
-import com.example.demovbridge.ui.theme.VBridgeTheme
+import com.example.demovbridge.ui.theme.*
 import com.example.demovbridge.ui.components.*
+import androidx.compose.foundation.border
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -61,10 +63,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             VBridgeTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
+                VBridgeBackground {
                     val config by settingsManager.config.collectAsState(initial = null)
                     var currentConfig by remember { mutableStateOf<ParticipantConfig?>(null) }
                     
@@ -135,58 +134,119 @@ fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("VBridge", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Text("Real-time Translation", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
+        VBridgeLogo(modifier = Modifier.padding(bottom = 8.dp))
+        Text(
+            "Real-time bilingual conversations",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary
+        )
+        
+        StatusBadge(
+            text = "LOCAL-FIRST AI TRANSLATION",
+            statusColor = PrimaryCyan,
+            modifier = Modifier.padding(top = 16.dp)
+        )
         
         Spacer(modifier = Modifier.height(48.dp))
         
-        OutlinedTextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("Display Name") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        OutlinedTextField(
-            value = room,
-            onValueChange = { room = it },
-            label = { Text("Room Code") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        Text("Your Speaking Language:", style = MaterialTheme.typography.bodyLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = language == "vi", onClick = { language = "vi" })
-            Text("Vietnamese")
-            Spacer(modifier = Modifier.width(16.dp))
-            RadioButton(selected = language == "en", onClick = { language = "en" })
-            Text("English")
-        }
-        
-        Spacer(modifier = Modifier.height(32.dp))
-        
-        Button(
-            onClick = {
-                if (name.isNotBlank() && room.isNotBlank()) {
-                    onJoin(
-                        ParticipantConfig(
-                            participantId = UUID.randomUUID().toString(),
-                            displayName = name,
-                            roomId = room,
-                            sourceLanguage = language,
-                            targetLanguage = if (language == "vi") "en" else "vi"
-                        )
-                    )
+        GlassCard {
+            Text(
+                "Start or join a conversation",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+            Text(
+                "Create a room and invite another device.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Your Name") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BorderActiveCyan,
+                    unfocusedBorderColor = BorderDefault,
+                    focusedLabelColor = BrightCyan,
+                    cursorColor = BrightCyan
+                )
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            OutlinedTextField(
+                value = room,
+                onValueChange = { room = it },
+                label = { Text("Room Code") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BorderActiveIndigo,
+                    unfocusedBorderColor = BorderDefault,
+                    focusedLabelColor = LightIndigo,
+                    cursorColor = LightIndigo
+                )
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Text(
+                "I AM SPEAKING", 
+                style = MaterialTheme.typography.labelSmall, 
+                color = TextMuted
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("vi" to "VIETNAMESE", "en" to "ENGLISH").forEach { (code, label) ->
+                    val selected = language == code
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                            .border(
+                                1.dp, 
+                                if (selected) BorderActiveCyan else BorderSubtle, 
+                                RoundedCornerShape(8.dp)
+                            ),
+                        color = if (selected) PrimaryCyan.copy(alpha = 0.1f) else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp),
+                        onClick = { language = code }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                label, 
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) BrightCyan else TextSecondary
+                            )
+                        }
+                    }
                 }
-            },
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text("JOIN CONVERSATION", fontWeight = FontWeight.Bold)
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            VBridgeButton(
+                onClick = {
+                    if (name.isNotBlank() && room.isNotBlank()) {
+                        onJoin(
+                            ParticipantConfig(
+                                participantId = UUID.randomUUID().toString(),
+                                displayName = name,
+                                roomId = room,
+                                sourceLanguage = language,
+                                targetLanguage = if (language == "vi") "en" else "vi"
+                            )
+                        )
+                    }
+                },
+                text = "Join Room",
+                primary = true
+            )
         }
     }
 }
@@ -220,11 +280,11 @@ fun MainScreen(
     var showSettings by rememberSaveable { mutableStateOf(false) }
 
     val (connText, connColor) = when {
-        connectivityMode == ConnectivityMode.Solo -> "Solo" to Color(0xFF64748B)
-        connectionState is NetworkEvent.Connected -> "Connected" to Color(0xFF22C55E)
-        connectionState is NetworkEvent.Connecting -> "Connecting…" to Color(0xFFFFC107)
-        connectionState is NetworkEvent.Error -> "Error" to Color.Red
-        else -> "Disconnected" to Color.Gray
+        connectivityMode == ConnectivityMode.Solo -> "Solo" to StatusIdle
+        connectionState is NetworkEvent.Connected -> "Connected" to StatusSuccess
+        connectionState is NetworkEvent.Connecting -> "Connecting…" to StatusProcessing
+        connectionState is NetworkEvent.Error -> "Error" to StatusError
+        else -> "Disconnected" to TextMuted
     }
 
     if (showSettings) {
@@ -248,23 +308,36 @@ fun MainScreen(
                 onSettingsClick = { showSettings = true }
             )
         },
-        bottomBar = { VBridgeBottomNav() },
+        containerColor = Color.Transparent,
         floatingActionButton = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(bottom = 16.dp)
+            ) {
                 when (floor) {
                     Floor.RemoteSpeaking -> Text(
-                        "It's their turn…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "PARTNER IS SPEAKING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.08.sp
                     )
                     Floor.LocalSpeaking -> Text(
-                        "Listening…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        "LISTENING…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BrightCyan,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.08.sp
                     )
-                    Floor.Open -> Unit
+                    Floor.Open -> Text(
+                        "HOLD TO SPEAK",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.08.sp
+                    )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 RecordingMicFAB(
                     isRecording = meetingState == MeetingState.Recording,
                     enabled = floor != Floor.RemoteSpeaking,
@@ -298,19 +371,24 @@ fun MainScreen(
                 .fillMaxSize()
         ) {
             ParticipantHeaderCard(
-                direction = if (direction == Direction.ViToEn) "VN → EN" else "EN → VN",
+                direction = if (direction == Direction.ViToEn) "VIETNAMESE → ENGLISH" else "ENGLISH → VIETNAMESE",
                 onSwap = { viewModel.toggleDirection() }
             )
             
             if (!hasPermission) {
-                Card(
+                GlassCard(
                     modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    borderColor = StatusError
                 ) {
                     Text(
-                        "Microphone permission required.",
-                        modifier = Modifier.padding(16.dp),
-                        color = MaterialTheme.colorScheme.onErrorContainer
+                        "Microphone permission required for real-time translation.",
+                        color = StatusError,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    VBridgeButton(
+                        onClick = onRequestMicrophonePermission,
+                        text = "Grant Permission",
+                        modifier = Modifier.padding(top = 16.dp)
                     )
                 }
             }
@@ -323,6 +401,7 @@ fun MainScreen(
                 } else {
                     "Tap the microphone to start and stop."
                 },
+                isListening = meetingState == MeetingState.Recording,
                 modifier = Modifier.weight(1f)
             )
         }
