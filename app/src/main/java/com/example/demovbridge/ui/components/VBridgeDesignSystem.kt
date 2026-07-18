@@ -38,7 +38,7 @@ fun VBridgeBackground(
         // Technical Grid
         Canvas(modifier = Modifier.fillMaxSize()) {
             val gridSize = 64.dp.toPx()
-            val gridColor = Color(0x101F2937) // rgba(31, 41, 55, 0.063)
+            val gridColor = Color(0x081F2937) // Even more subtle on light background
             
             // Vertical lines
             var x = 0f
@@ -55,13 +55,13 @@ fun VBridgeBackground(
             }
         }
 
-        // Atmospheric Glows (Simplified for mobile)
+        // Atmospheric Glows (Subtle for light mode)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.radialGradient(
-                        colors = listOf(PrimaryCyan.copy(alpha = 0.08f), Color.Transparent),
+                        colors = listOf(PrimaryCyan.copy(alpha = 0.05f), Color.Transparent),
                         center = Offset(0f, 0f),
                         radius = 800f
                     )
@@ -72,7 +72,7 @@ fun VBridgeBackground(
                 .fillMaxSize()
                 .background(
                     Brush.radialGradient(
-                        colors = listOf(IndigoAccent.copy(alpha = 0.08f), Color.Transparent),
+                        colors = listOf(IndigoAccent.copy(alpha = 0.05f), Color.Transparent),
                         center = Offset(1000f, 1500f),
                         radius = 1000f
                     )

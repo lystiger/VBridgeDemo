@@ -9,6 +9,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlin.math.sqrt
 import java.util.*
 import java.util.concurrent.atomic.AtomicReference
 
@@ -29,27 +30,32 @@ class InterpreterPipeline(
     private val ttsEn: SpeechSynthesizer,
     private val playback: AudioPlayer,
     private val transport: TranslationTransport,
+    private val glossary: com.example.demovbridge.translation.Glossary? = null,
     private val roomId: String,
     private val localParticipantId: String,
     private val localParticipantName: String,
     private val diagnostics: PipelineDiagnostics? = null,
+    private val isOnline: StateFlow<Boolean>,
+    // Set to false to fall back to the old fixed-direction behavior (use
+    // currentDirection to pick asrVi/asrEn instead of auto-detecting).
+    private val autoDetectLanguage: Boolean = true,
     private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime
 ) {
     private var scope: CoroutineScope? = null
-    
+
     private val _events = MutableSharedFlow<PipelineEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<PipelineEvent> = _events.asSharedFlow()
 
-    private val asrIn = Channel<PendingAudioTurn>(capacity = 4, onBufferOverflow = BufferOverflow.SUSPEND)
-    private val mtIn = Channel<Pair<PendingAudioTurn, String>>(capacity = 8, onBufferOverflow = BufferOverflow.SUSPEND)
-    private val ttsIn = Channel<TranslationEvent>(capacity = 8, onBufferOverflow = BufferOverflow.SUSPEND) // Changed from DROP_OLDEST
-    
+    private val asrIn = Channel<PendingAudioTurn>(capacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val mtIn = Channel<Pair<PendingAudioTurn, String>>(capacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val ttsIn = Channel<TranslationEvent>(capacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
     @Volatile
     private var isMutedForPlayback = false
 
     private val _started = MutableStateFlow(false)
     val started: StateFlow<Boolean> = _started.asStateFlow()
-    
+
     private val recentEventIds = LruEventCache(200)
 
     private val _currentDirection = AtomicReference(Direction.ViToEn)
@@ -71,7 +77,7 @@ class InterpreterPipeline(
             transport.events.collect { event ->
                 if (event is NetworkEvent.TranslationReceived) {
                     val translationEvent = event.event
-                    
+
                     if (translationEvent.speakerId == localParticipantId) return@collect
                     if (translationEvent.roomId != roomId) return@collect
                     if (!recentEventIds.markIfNew(translationEvent.eventId)) return@collect
@@ -79,12 +85,12 @@ class InterpreterPipeline(
                     val direction = if (translationEvent.sourceLanguage == "vi") Direction.ViToEn else Direction.EnToVi
 
                     _events.emit(PipelineEvent.Translated(
-                        translationEvent.eventId, translationEvent.sourceText, translationEvent.translatedText, 
+                        translationEvent.eventId, translationEvent.sourceText, translationEvent.translatedText,
                         direction, elapsedRealtimeMs(),
                         speakerName = translationEvent.speakerName,
                         isLocal = false
                     ))
-                    
+
                     try {
                         ttsIn.send(translationEvent)
                     } catch (e: Exception) {
@@ -94,15 +100,25 @@ class InterpreterPipeline(
             }
         }
 
-        // 2. ASR
+        // 2. ASR (with optional auto language detection)
         newScope.launch {
             for (pending in asrIn) {
                 try {
                     val startTime = elapsedRealtimeMs()
-                    val asr = if (pending.direction == Direction.ViToEn) asrVi else asrEn
-                    val text = asr.transcribe(pending.audio)
+
+                    // Resolve which transcript + which direction actually applies to this turn.
+                    val (rawText, resolvedDirection) = if (autoDetectLanguage) {
+                        detectLanguageAndTranscribe(pending.audio)
+                    } else {
+                        val asr = if (pending.direction == Direction.ViToEn) asrVi else asrEn
+                        asr.transcribe(pending.audio) to pending.direction
+                    }
+
+                    // Apply Glossary to correct ASR output before translation
+                    val text = glossary?.apply(rawText, resolvedDirection) ?: rawText
+
                     val endTime = elapsedRealtimeMs()
-                    
+
                     if (text.isBlank()) {
                         _events.emit(PipelineEvent.Failed(pending.turnId, PipelineEvent.Stage.Asr, "Empty transcript", false))
                         continue
@@ -113,8 +129,17 @@ class InterpreterPipeline(
                         processingTimeMs = endTime - startTime
                     )
 
-                    _events.emit(PipelineEvent.Transcribed(pending.turnId, text, pending.direction, endTime))
-                    mtIn.send(pending to text)
+                    // Carry the *resolved* direction downstream so translation and TTS
+                    // target the correct language pair, even if it differs from what
+                    // was assumed when recording started.
+                    val resolvedPending = if (resolvedDirection == pending.direction) {
+                        pending
+                    } else {
+                        pending.copy(direction = resolvedDirection)
+                    }
+
+                    _events.emit(PipelineEvent.Transcribed(resolvedPending.turnId, text, resolvedDirection, endTime))
+                    mtIn.send(resolvedPending to text)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -130,7 +155,7 @@ class InterpreterPipeline(
                     val startTime = elapsedRealtimeMs()
                     val result = translator.translate(text, pending.direction)
                     val endTime = elapsedRealtimeMs()
-                    
+
                     diagnostics?.recordLatency(result.latencyMs)
 
                     val event = TranslationEvent(
@@ -159,7 +184,7 @@ class InterpreterPipeline(
                     )
 
                     val sendResult = transport.send(event)
-                    if (sendResult is TransportSendResult.Failure && transport.isRelayActive) {
+                    if (sendResult is TransportSendResult.Failure && transport.isRelayActive && isOnline.value) {
                         _events.emit(
                             PipelineEvent.Failed(
                                 turnId = pending.turnId,
@@ -169,7 +194,7 @@ class InterpreterPipeline(
                             )
                         )
                     }
-                    
+
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -183,7 +208,7 @@ class InterpreterPipeline(
             for (event in ttsIn) {
                 try {
                     val targetTts = if (event.targetLanguage == "vi") ttsVi else ttsEn
-                    
+
                     val audio = targetTts.synthesize(event.translatedText)
                     _events.emit(
                         PipelineEvent.SpokenReady(
@@ -193,7 +218,7 @@ class InterpreterPipeline(
                             isLocal = false
                         )
                     )
-                    
+
                     isMutedForPlayback = true
                     try {
                         _events.emit(
@@ -223,49 +248,180 @@ class InterpreterPipeline(
         }
     }
 
+    /**
+     * Runs both language models on the same utterance and picks the more
+     * plausible transcript. Heuristic-based (no true confidence score exposed
+     * by this sherpa-onnx SDK version):
+     *   1. Non-empty beats empty.
+     *   2. Longer token count generally beats shorter (wrong-language decode
+     *      tends to be sparse/garbled).
+     *   3. Vietnamese diacritics present in the VI-model output tip the
+     *      balance toward Vietnamese when scores are close.
+     *
+     * Good enough for a hackathon demo; not a substitute for real language ID.
+     */
+    private suspend fun detectLanguageAndTranscribe(audio: PcmAudio): Pair<String, Direction> = coroutineScope {
+        val viDeferred = async { runCatching { asrVi.transcribe(audio) }.getOrDefault("") }
+        val enDeferred = async { runCatching { asrEn.transcribe(audio) }.getOrDefault("") }
+
+        val viText = viDeferred.await()
+        val enText = enDeferred.await()
+
+        val viScore = scoreTranscript(viText, isVietnameseModel = true)
+        val enScore = scoreTranscript(enText, isVietnameseModel = false)
+
+        return@coroutineScope if (viScore >= enScore) {
+            viText to Direction.ViToEn
+        } else {
+            enText to Direction.EnToVi
+        }
+    }
+
+    private fun scoreTranscript(text: String, isVietnameseModel: Boolean): Double {
+        if (text.isBlank()) return -1.0
+
+        val words = text.trim().split(Regex("\\s+"))
+        val tokenCount = words.size
+        
+        var s = 0.0
+
+        // 1. Language-Specific Heuristics
+        if (isVietnameseModel) {
+            // Vietnamese diacritics are a strong indicator, but balanced now
+            if (containsVietnameseDiacritics(text)) {
+                s += 1.5
+            }
+            // Check for common Vietnamese particles
+            val viParticles = setOf("là", "của", "và", "có", "không", "cho", "được", "tôi", "anh", "chị", "bạn")
+            if (words.any { it.lowercase() in viParticles }) {
+                s += 1.0
+            }
+        } else {
+            // English function words (expanded list)
+            val enParticles = setOf(
+                "the", "and", "is", "of", "to", "a", "in", "that", "it", 
+                "i", "you", "my", "this", "can", "have", "for", "with", "what"
+            )
+            if (words.any { it.lowercase() in enParticles }) {
+                s += 1.5 // Increased weight for English matches
+            }
+            
+            // Penalty: English model should NOT produce Vietnamese diacritics
+            if (containsVietnameseDiacritics(text)) {
+                s -= 2.0
+            }
+        }
+
+        // 2. Repetition Penalty (Detect hallucinations/noise)
+        if (tokenCount >= 3) {
+            val uniqueTokens = words.map { it.lowercase() }.toSet().size
+            val repetitionRatio = uniqueTokens.toDouble() / tokenCount
+            if (repetitionRatio < 0.4) {
+                s -= 1.5 // Heavy penalty for "the the the" or similar garble
+            }
+        }
+
+        // 3. Length Normalization & Tie-breaking
+        s += tokenCount * 0.1
+
+        // 4. Short-phrase handling
+        if (tokenCount <= 1 && text.length < 3) {
+            s -= 0.5
+        }
+
+        return s
+    }
+
+    private fun containsVietnameseDiacritics(text: String): Boolean {
+        val diacriticRange = Regex(
+            "[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡ" +
+                    "ùúụủũưừứựửữỳýỵỷỹđ]",
+            RegexOption.IGNORE_CASE
+        )
+        return diacriticRange.containsMatchIn(text)
+    }
+
+    private fun calculateRms(samples: ShortArray): Double {
+        if (samples.isEmpty()) return 0.0
+        var sum = 0.0
+        for (sample in samples) {
+            sum += sample.toDouble() * sample
+        }
+        return sqrt(sum / samples.size)
+    }
+
     fun startRecording() {
         if (isMutedForPlayback) return
         if (!_started.value) return
-        
+
         captureJob?.cancel()
         val currentScope = scope ?: return
-        
+
         captureJob = currentScope.launch {
-            val audioData = mutableListOf<ShortArray>()
-            val turnId = UUID.randomUUID().toString()
-            val direction = currentDirection
-            
-            _events.emit(PipelineEvent.SpeechStarted(turnId, elapsedRealtimeMs()))
-            
             vad.reset()
+            var turnId = UUID.randomUUID().toString()
+            var speechStartedEmitted = false
+            val direction = currentDirection
 
             try {
                 capture.capture().collect { samples ->
-                    vad.process(samples)?.let { utterance ->
-                        audioData.addAll(utterance)
-                    }
-                }
-            } catch (e: Exception) {
-                 _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Capture, e.message ?: "Capture failed", false))
-                 return@launch
-            } finally {
-                withContext(NonCancellable) {
-                    vad.flush()?.let { audioData.addAll(it) }
+                    if (!isActive) return@collect
                     
-                    if (audioData.isNotEmpty()) {
-                        val totalSize = audioData.sumOf { it.size }
+                    val processed = vad.process(samples)
+                    
+                    // Real-time UI feedback: Speech Started (Emit once per turnId)
+                    if (vad.isSpeaking && !speechStartedEmitted) {
+                        _events.emit(PipelineEvent.SpeechStarted(turnId, elapsedRealtimeMs()))
+                        speechStartedEmitted = true
+                    }
+
+                    if (processed != null) {
+                        // VAD detected speech end (silence) -> Automatic trigger
+                        val totalSize = processed.sumOf { it.size }
                         val pcm = ShortArray(totalSize)
                         var offset = 0
-                        audioData.forEach {
+                        processed.forEach {
                             it.copyInto(pcm, offset)
                             offset += it.size
                         }
-                        val endTime = elapsedRealtimeMs()
-                        _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+
+                        // Noise Filter: Minimum energy check
+                        val rms = calculateRms(pcm)
+                        if (totalSize > 1600 && rms > 200) {
+                            val endTime = elapsedRealtimeMs()
+                            _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+                            asrIn.send(PendingAudioTurn(turnId, PcmAudio(pcm), direction, endTime))
+                        }
                         
-                        asrIn.send(PendingAudioTurn(turnId, PcmAudio(pcm), direction, endTime))
-                    } else {
-                        _events.emit(PipelineEvent.Failed(turnId, PipelineEvent.Stage.Asr, "No speech detected", false))
+                        // Prepare for next utterance in same capture session
+                        turnId = UUID.randomUUID().toString()
+                        speechStartedEmitted = false
+                    }
+                }
+            } catch (e: Exception) {
+                _events.emit(PipelineEvent.Failed("unknown", PipelineEvent.Stage.Capture, e.message ?: "Capture failed", false))
+            } finally {
+                withContext(NonCancellable) {
+                    val flushed = vad.flush()
+                    if (flushed != null) {
+                        val turnId = UUID.randomUUID().toString()
+                        val direction = currentDirection
+
+                        val totalSize = flushed.sumOf { it.size }
+                        val pcm = ShortArray(totalSize)
+                        var offset = 0
+                        flushed.forEach {
+                            it.copyInto(pcm, offset)
+                            offset += it.size
+                        }
+
+                        // Noise Filter: Minimum energy check
+                        val rms = calculateRms(pcm)
+                        if (totalSize > 1600 && rms > 200) {
+                            val endTime = elapsedRealtimeMs()
+                            _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
+                            asrIn.send(PendingAudioTurn(turnId, PcmAudio(pcm), direction, endTime))
+                        }
                     }
                 }
             }

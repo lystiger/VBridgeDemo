@@ -2,15 +2,16 @@ package com.example.demovbridge.ui.theme
 
 import android.app.Activity
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.material3.lightColorScheme
 import androidx.core.view.WindowCompat
 
-private val DarkColorScheme = darkColorScheme(
+private val LightColorScheme = lightColorScheme(
     primary = PrimaryCyan,
     secondary = IndigoAccent,
     tertiary = TealAccent,
@@ -18,7 +19,7 @@ private val DarkColorScheme = darkColorScheme(
     surface = ElevatedPanel,
     onPrimary = Color.White,
     onSecondary = Color.White,
-    onTertiary = Color.Black,
+    onTertiary = Color.White,
     onBackground = TextPrimary,
     onSurface = TextPrimary,
     outline = BorderDefault,
@@ -30,13 +31,13 @@ private val DarkColorScheme = darkColorScheme(
 fun VBridgeTheme(
     content: @Composable () -> Unit
 ) {
-    val colorScheme = DarkColorScheme
+    val colorScheme = LightColorScheme
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
             window.statusBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = true
         }
     }
 

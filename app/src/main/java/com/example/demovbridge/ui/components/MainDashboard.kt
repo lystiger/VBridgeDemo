@@ -73,27 +73,6 @@ fun ParticipantHeaderCard(
 }
 
 @Composable
-fun RecordingMicFAB(
-    isRecording: Boolean,
-    enabled: Boolean = true,
-    captureMode: CaptureMode,
-    onToggle: () -> Unit,
-    onPressStart: () -> Unit,
-    onPressEnd: () -> Unit
-) {
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
-    ) {
-        PushToTalkButton(
-            isPressed = isRecording,
-            onPressStart = onPressStart,
-            onPressEnd = onPressEnd
-        )
-    }
-}
-
-@Composable
 fun VBridgeBottomNav() {
     // Hidden as per brief minimalist tone or kept very subtle
 }

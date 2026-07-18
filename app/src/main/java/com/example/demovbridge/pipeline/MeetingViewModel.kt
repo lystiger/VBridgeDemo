@@ -20,14 +20,18 @@ import com.example.demovbridge.ui.conversation.TurnDirection
 import com.example.demovbridge.ui.conversation.TurnStatus
 import com.example.demovbridge.utils.ResourceUtils
 import com.example.demovbridge.vad.SherpaVad
+import com.example.demovbridge.network.ConnectivityMonitor
+import com.example.demovbridge.audio.BluetoothAudioManager
+import com.example.demovbridge.translation.Glossary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-    
+
 sealed interface MeetingState {
     data object Idle : MeetingState
+    data object Listening : MeetingState
     data object Recording : MeetingState
     data object ProcessingAsr : MeetingState
     data object Translating : MeetingState
@@ -50,6 +54,9 @@ class MeetingViewModel(
     private var translator: com.example.demovbridge.translation.Translator? = null
     private var switchableTranslator: DelegatingTranslator? = null
     private val network = VBridgeSocket()
+    private val connectivityMonitor = ConnectivityMonitor(context)
+    private val bluetoothAudioManager = BluetoothAudioManager(context)
+    private val glossary = Glossary()
     private val diagnostics = PipelineDiagnostics(context)
 
     private val _isReady = MutableStateFlow(false)
@@ -75,6 +82,12 @@ class MeetingViewModel(
     private val _connectionState = MutableStateFlow<NetworkEvent>(NetworkEvent.Disconnected)
     val connectionState: StateFlow<NetworkEvent> = _connectionState.asStateFlow()
 
+    private val _isOnline = MutableStateFlow(false)
+    val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
+
+    private val _isBluetoothActive = MutableStateFlow(false)
+    val isBluetoothActive: StateFlow<Boolean> = _isBluetoothActive.asStateFlow()
+
     private val _mode = MutableStateFlow(ConnectivityMode.Room)
     val mode: StateFlow<ConnectivityMode> = _mode.asStateFlow()
 
@@ -94,13 +107,27 @@ class MeetingViewModel(
                     initializePipeline()
                 }
                 _isReady.value = true
-                
+
                 launch {
                     diagnostics.telemetry.collect { _telemetry.value = it }
                 }
 
                 launch {
                     network.events.collect { _connectionState.value = it }
+                }
+
+                launch {
+                    connectivityMonitor.isOnline.collect { isOnline ->
+                        _isOnline.value = isOnline
+                        switchableTranslator?.useRemote = isOnline
+                        _mtEngine.value = if (isOnline) MtEngine.Remote else MtEngine.OnDevice
+                    }
+                }
+
+                launch {
+                    bluetoothAudioManager.isBluetoothConnected.collect { active ->
+                        _isBluetoothActive.value = active
+                    }
                 }
 
                 pipeline?.events?.collect { event ->
@@ -115,10 +142,19 @@ class MeetingViewModel(
     }
 
     private fun initializePipeline() {
-        network.connect(config.roomId)
-        
+        // Cập nhật: Chỉ kết nối mạng nếu đang ở chế độ Room[cite: 2]
+        if (_mode.value == ConnectivityMode.Room) {
+            network.connect(config.roomId)
+        }
+
         val capture = AudioCapture()
-        val vad = SherpaVad(assets, "vad/silero_vad.onnx")
+        val vad = SherpaVad(assets, "vad/silero_vad.onnx").apply {
+            updateParameters(
+                minSilenceDuration = 0.8f,
+                minSpeechDuration = 0.2f,
+                threshold = 0.4f
+            )
+        }
         val asrVi = SherpaAsr(
             assets,
             encoderPath = "asr-vi/encoder.onnx",
@@ -140,10 +176,10 @@ class MeetingViewModel(
         )
         switchableTranslator = delegatingTranslator
         this.translator = delegatingTranslator
-        
+
         val ttsEnDir = File(context.filesDir, "tts-en")
         ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))
-        
+
         val ttsViDir = File(context.filesDir, "tts-vi")
         ResourceUtils.copyAssetsDir(context, "tts-vi/espeak-ng-data", File(ttsViDir, "espeak-ng-data"))
 
@@ -153,22 +189,24 @@ class MeetingViewModel(
             tokensPath = "tts-en/tokens.txt",
             dataDir = File(ttsEnDir, "espeak-ng-data").absolutePath
         )
-        
+
         val ttsVi = SherpaTts(
             assets,
             modelPath = "tts-vi/vits.onnx",
             tokensPath = "tts-vi/tokens.txt",
             dataDir = File(ttsViDir, "espeak-ng-data").absolutePath
         )
-        
+
         val playback = AudioPlayback()
 
         pipeline = InterpreterPipeline(
             capture, vad, asrVi, asrEn, delegatingTranslator, ttsVi, ttsEn, playback, network,
+            glossary = glossary,
             roomId = config.roomId,
             localParticipantId = config.participantId,
             localParticipantName = config.displayName,
-            diagnostics = diagnostics
+            diagnostics = diagnostics,
+            isOnline = _isOnline
         ).apply {
             currentDirection = _currentDirection.value
             start()
@@ -181,6 +219,9 @@ class MeetingViewModel(
 
         when (event) {
             is PipelineEvent.SpeechStarted -> {
+                // Deduplicate SpeechStarted in case of "late" events
+                if (currentList.any { it.id == event.turnId }) return@handlePipelineEvent
+
                 _meetingState.value = MeetingState.Recording
                 _floor.value = Floor.LocalSpeaking
                 currentList.add(
@@ -204,18 +245,23 @@ class MeetingViewModel(
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         sourceText = event.text,
+                        direction = if (event.direction == Direction.ViToEn) TurnDirection.ViToEn else TurnDirection.EnToVi,
                         status = TurnStatus.Translating
                     )
                 }
             }
             is PipelineEvent.Translated -> {
                 if (event.isLocal) {
-                    _meetingState.value = MeetingState.Idle
+                    // Only return to Listening if the user hasn't manually toggled OFF
+                    if (_meetingState.value != MeetingState.Idle) {
+                        _meetingState.value = MeetingState.Listening
+                    }
                     _floor.value = Floor.Open
                 }
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
                         translatedText = event.translatedText,
+                        direction = if (event.direction == Direction.ViToEn) TurnDirection.ViToEn else TurnDirection.EnToVi,
                         status = TurnStatus.Complete,
                         sourceText = if (currentList[index].sourceText == "..." || currentList[index].sourceText.isBlank()) event.sourceText else currentList[index].sourceText
                     )
@@ -224,7 +270,7 @@ class MeetingViewModel(
                         ConversationTurn(
                             id = event.turnId,
                             speakerId = if (event.isLocal) config.participantId else "remote",
-                            speakerName = event.speakerName ?: "Remote", 
+                            speakerName = event.speakerName ?: "Remote",
                             isLocal = event.isLocal,
                             direction = if (event.direction == Direction.ViToEn) TurnDirection.ViToEn else TurnDirection.EnToVi,
                             sourceText = event.sourceText,
@@ -242,12 +288,12 @@ class MeetingViewModel(
             }
             is PipelineEvent.PlaybackCompleted -> {
                 if (!event.isLocal) {
-                    _meetingState.value = MeetingState.Idle
+                    _meetingState.value = if (_meetingState.value != MeetingState.Idle) MeetingState.Listening else MeetingState.Idle
                     _floor.value = Floor.Open
                 }
             }
             is PipelineEvent.Failed -> {
-                _meetingState.value = MeetingState.Idle
+                _meetingState.value = if (_meetingState.value != MeetingState.Idle) MeetingState.Listening else MeetingState.Idle
                 _floor.value = Floor.Open
                 if (index >= 0) {
                     currentList[index] = currentList[index].copy(
@@ -262,10 +308,14 @@ class MeetingViewModel(
     }
 
     fun startRecording() {
+        if (_meetingState.value != MeetingState.Idle) return
+        _meetingState.value = MeetingState.Listening
         pipeline?.startRecording()
     }
 
     fun stopRecording() {
+        if (_meetingState.value == MeetingState.Idle) return
+        _meetingState.value = MeetingState.Idle
         pipeline?.stopRecording()
     }
 
@@ -306,6 +356,7 @@ class MeetingViewModel(
         super.onCleared()
         pipeline?.stop()
         translator?.close()
+        bluetoothAudioManager.release()
         network.destroy()
         diagnostics.stop()
     }
