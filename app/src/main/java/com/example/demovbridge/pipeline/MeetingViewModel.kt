@@ -152,6 +152,7 @@ class MeetingViewModel(
             diagnostics = diagnostics
         ).apply {
             currentDirection = _currentDirection.value
+            start()
         }
     }
 
@@ -237,9 +238,7 @@ class MeetingViewModel(
         pipeline?.stopRecording()
     }
 
-    fun startPipeline() {
-        pipeline?.start()
-    }
+    // startPipeline() removed as it is now called during initialization
 
     fun stopPipeline() {
         pipeline?.stop()

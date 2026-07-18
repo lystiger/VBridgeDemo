@@ -49,6 +49,9 @@ class InterpreterPipeline(
     
     @Volatile
     private var isMutedForPlayback = false
+
+    @Volatile
+    private var started = false
     
     // Safeguard C: Deduplication Cache Layer
     private val recentEventIds = Collections.synchronizedSet(LinkedHashSet<String>())
@@ -57,7 +60,11 @@ class InterpreterPipeline(
 
     private var captureJob: Job? = null
 
+    @Synchronized
     fun start() {
+        if (started) return
+        started = true
+
         // 0. Network Listener -> TTS
         scope.launch {
             network.events.collect { event ->
@@ -218,7 +225,10 @@ class InterpreterPipeline(
     }
 
     fun stop() {
+        captureJob?.cancel()
+        captureJob = null
         scope.cancel()
         playback.stop()
+        started = false
     }
 }
