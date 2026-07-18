@@ -236,8 +236,8 @@ class InterpreterPipeline(
                     audioData.add(samples)
                 }
             } finally {
-                if (audioData.isNotEmpty()) {
-                    withContext(NonCancellable) {
+                withContext(NonCancellable) {
+                    if (audioData.isNotEmpty()) {
                         val pcm = ShortArray(audioData.sumOf { it.size })
                         var offset = 0
                         audioData.forEach {
@@ -247,6 +247,17 @@ class InterpreterPipeline(
                         val endTime = SystemClock.elapsedRealtime()
                         _events.emit(PipelineEvent.SpeechEnded(turnId, endTime, pcm))
                         asrIn.send(PendingAudioTurn(turnId, pcm, direction, endTime))
+                    } else {
+                        // Safeguard: If no audio was captured (e.g. very short tap),
+                        // we must still transition out of the Recording state.
+                        _events.emit(
+                            PipelineEvent.Failed(
+                                turnId = turnId,
+                                stage = PipelineEvent.Stage.Vad,
+                                message = "No audio captured",
+                                usedFallback = false
+                            )
+                        )
                     }
                 }
             }

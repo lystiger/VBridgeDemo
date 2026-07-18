@@ -1,18 +1,25 @@
 package com.example.demovbridge
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
@@ -96,9 +103,7 @@ class MainActivity : ComponentActivity() {
                                 MainScreen(
                                     viewModel = vm,
                                     latencyTracer = latencyTracer,
-                                    onRequestMicrophonePermission = {
-                                        requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    },
+                                    onRequestMicrophonePermission = ::requestMicrophone,
                                     hasPermission = microphonePermissionGranted
                                 )
                             }
@@ -106,6 +111,26 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        microphonePermissionGranted =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestMicrophone() {
+        if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+            // Denied once, can still ask — show the dialog
+            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else if (!microphonePermissionGranted) {
+            // Permanently denied (or first time). Try launch; if nothing happens, open Settings.
+            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            })
         }
     }
 
@@ -255,43 +280,44 @@ fun MainScreen(
                 val isProcessing = meetingState is MeetingState.ProcessingAsr || meetingState is MeetingState.Translating
                 val isPlaying = meetingState == MeetingState.PlayingRemoteTts
                 
-                Button(
-                    onClick = { },
+                val bg = when {
+                    isRecording -> Color.Red
+                    isProcessing -> Color.Gray
+                    isPlaying -> Color.Blue.copy(alpha = 0.5f)
+                    else -> MaterialTheme.colorScheme.primary
+                }
+
+                Box(
                     modifier = Modifier
                         .height(64.dp)
                         .weight(1f)
                         .padding(horizontal = 16.dp)
-                        .pointerInput(meetingState) {
-                            if (isPlaying) return@pointerInput
-                            detectTapGestures(
-                                onPress = {
+                        .clip(RoundedCornerShape(50))
+                        .background(bg)
+                        .pointerInput(hasPermission) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitFirstDown()
                                     if (!hasPermission) {
                                         onRequestMicrophonePermission()
                                     } else {
                                         viewModel.startRecording()
-                                        tryAwaitRelease()
+                                        waitForUpOrCancellation()
                                         viewModel.stopRecording()
                                     }
                                 }
-                            )
+                            }
                         },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = when {
-                            isRecording -> Color.Red
-                            isProcessing -> Color.Gray
-                            isPlaying -> Color.Blue.copy(alpha = 0.5f)
-                            else -> MaterialTheme.colorScheme.primary
-                        }
-                    ),
-                    enabled = !isPlaying
+                    contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        when {
+                        text = when {
                             isRecording -> "RELEASE TO SEND"
                             isProcessing -> "PROCESSING..."
                             isPlaying -> "REMOTE SPEAKING"
                             else -> "HOLD TO SPEAK"
-                        }
+                        },
+                        color = Color.White
                     )
                 }
             }
