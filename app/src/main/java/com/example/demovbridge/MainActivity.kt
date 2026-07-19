@@ -2,6 +2,7 @@ package com.example.demovbridge
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,11 +46,18 @@ class MainActivity : ComponentActivity() {
     private val latencyTracer = LatencyTracer()
 
     private var microphonePermissionGranted by mutableStateOf(false)
+    private var bluetoothPermissionGranted by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         microphonePermissionGranted = granted
+    }
+
+    private val requestBluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        bluetoothPermissionGranted = granted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,27 +70,38 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            bluetoothPermissionGranted =
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED
+            
+            if (!bluetoothPermissionGranted) {
+                requestBluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        } else {
+            bluetoothPermissionGranted = true
+        }
+
         setContent {
             VBridgeTheme {
                 VBridgeBackground {
                     val config by settingsManager.config.collectAsState(initial = null)
                     var currentConfig by remember { mutableStateOf<ParticipantConfig?>(null) }
 
-                    LaunchedEffect(config) {
-                        if (config != null && currentConfig == null) {
-                            currentConfig = config
-                            viewModel = MeetingViewModel(applicationContext, config!!)
-                        }
-                    }
-
                     if (currentConfig == null) {
-                        SetupScreen(onJoin = { newConfig ->
-                            lifecycleScope.launch {
-                                settingsManager.saveConfig(newConfig)
-                                currentConfig = newConfig
-                                viewModel = MeetingViewModel(applicationContext, newConfig)
+                        SetupScreen(
+                            initialName = config?.displayName ?: "",
+                            initialRoom = config?.roomId ?: "test-room",
+                            onJoin = { newConfig ->
+                                lifecycleScope.launch {
+                                    settingsManager.saveConfig(newConfig)
+                                    currentConfig = newConfig
+                                    viewModel = MeetingViewModel(applicationContext, newConfig)
+                                }
                             }
-                        })
+                        )
                     } else {
                         val vm = viewModel
                         if (vm == null) {
@@ -123,10 +142,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var room by remember { mutableStateOf("test-room") }
-    var language by remember { mutableStateOf("vi") }
+fun SetupScreen(
+    initialName: String,
+    initialRoom: String,
+    onJoin: (ParticipantConfig) -> Unit
+) {
+    var name by remember(initialName) { mutableStateOf(initialName) }
+    var room by remember(initialRoom) { mutableStateOf(initialRoom) }
 
     Column(
         modifier = Modifier
@@ -142,7 +164,7 @@ fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
             color = TextSecondary
         )
         StatusBadge(
-            text = "LOCAL-FIRST AI TRANSLATION",
+            text = "AUTO-LANGUAGE AI TRANSLATION",
             statusColor = PrimaryCyan,
             modifier = Modifier.padding(top = 16.dp)
         )
@@ -155,24 +177,17 @@ fun SetupScreen(onJoin: (ParticipantConfig) -> Unit) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your Name") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
             Spacer(modifier = Modifier.height(16.dp))
             OutlinedTextField(value = room, onValueChange = { room = it }, label = { Text("Room Code") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Text("INITIAL SPOKEN LANGUAGE (AUTO-DETECTED)", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("vi" to "VIETNAMESE", "en" to "ENGLISH").forEach { (code, label) ->
-                    val selected = language == code
-                    Surface(
-                        modifier = Modifier.weight(1f).height(44.dp).border(1.dp, if (selected) BorderActiveCyan else BorderSubtle, RoundedCornerShape(8.dp)),
-                        color = if (selected) PrimaryCyan.copy(alpha = 0.1f) else Color.Transparent,
-                        shape = RoundedCornerShape(8.dp),
-                        onClick = { language = code }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) { Text(label, style = MaterialTheme.typography.labelMedium, color = if (selected) BrightCyan else TextSecondary) }
-                    }
-                }
-            }
             Spacer(modifier = Modifier.height(32.dp))
-            VBridgeButton(onClick = { if (name.isNotBlank() && room.isNotBlank()) onJoin(ParticipantConfig(UUID.randomUUID().toString(), name, room, language, if (language == "vi") "en" else "vi")) }, text = "Join Room", primary = true)
+            
+            VBridgeButton(
+                onClick = { 
+                    if (name.isNotBlank() && room.isNotBlank()) {
+                        onJoin(ParticipantConfig(UUID.randomUUID().toString(), name, room, "vi", "en")) 
+                    }
+                }, 
+                text = "Join Room", 
+                primary = true
+            )
         }
     }
 }
@@ -196,13 +211,14 @@ fun MainScreen(
     onBack: () -> Unit
 ) {
     val uiTurns by viewModel.turns.collectAsState()
-    val direction by viewModel.currentDirection.collectAsState()
     val meetingState by viewModel.meetingState.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
     val floor by viewModel.floor.collectAsState()
     val captureMode by viewModel.captureMode.collectAsState()
     val connectivityMode by viewModel.mode.collectAsState()
     val mtEngine by viewModel.mtEngine.collectAsState()
+    val isOnline by viewModel.isOnline.collectAsState()
+    val isBluetoothActive by viewModel.isBluetoothActive.collectAsState()
     var showSettings by rememberSaveable { mutableStateOf(false) }
 
     val (connText, connColor) = when {
@@ -212,6 +228,8 @@ fun MainScreen(
         connectionState is NetworkEvent.Error -> "Error" to Color.Red
         else -> "Disconnected" to Color.Gray
     }
+
+    val displayConnText = if (isBluetoothActive) "$connText + BT" else connText
 
     if (showSettings) {
         SettingsSheet(
@@ -228,7 +246,7 @@ fun MainScreen(
     Scaffold(
         topBar = {
             VBridgeTopBar(
-                connectionText = connText,
+                connectionText = displayConnText,
                 connectionColor = connColor,
                 onBackClick = onBack,
                 onSettingsClick = { showSettings = true }
@@ -245,21 +263,15 @@ fun MainScreen(
                 }
                 Spacer(modifier = Modifier.height(12.dp))
 
+                val isActive = meetingState == MeetingState.Recording || meetingState == MeetingState.Listening
+                
                 RecordingMicFAB(
-                    isRecording = meetingState == MeetingState.Recording,
-                    enabled = floor == Floor.Open, // FR-3: Vô hiệu hóa nút nếu không phải Open
-                    captureMode = captureMode,
+                    isRecording = isActive,
+                    enabled = floor != Floor.RemoteSpeaking,
                     onToggle = {
                         if (!hasPermission) onRequestMicrophonePermission()
-                        else if (meetingState == MeetingState.Recording) viewModel.stopRecording()
+                        else if (isActive) viewModel.stopRecording()
                         else viewModel.startRecording()
-                    },
-                    onPressStart = {
-                        if (hasPermission) viewModel.startRecording()
-                        else onRequestMicrophonePermission()
-                    },
-                    onPressEnd = {
-                        if (hasPermission) viewModel.stopRecording()
                     }
                 )
             }
@@ -268,18 +280,20 @@ fun MainScreen(
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                ParticipantHeaderCard(direction = if (direction == Direction.ViToEn) "VIETNAMESE → ENGLISH" else "ENGLISH → VIETNAMESE")
+                ParticipantHeaderCard(direction = "BILINGUAL AUTO-DETECT")
             }
             VBridgeConversation(
                 turns = uiTurns,
+                isOnline = isOnline,
                 onRetry = viewModel::retryTurn,
                 onToggleRecording = {
+                    val isActive = meetingState == MeetingState.Recording || meetingState == MeetingState.Listening
                     if (!hasPermission) onRequestMicrophonePermission()
-                    else if (meetingState == MeetingState.Recording) viewModel.stopRecording()
+                    else if (isActive) viewModel.stopRecording()
                     else viewModel.startRecording()
                 },
-                captureHint = if (captureMode == CaptureMode.HandsOn) "Hold to speak." else "Tap to start/stop.",
-                isListening = meetingState == MeetingState.Recording,
+                captureHint = "Tap to start/stop listening.",
+                isListening = meetingState == MeetingState.Recording || meetingState == MeetingState.Listening,
                 modifier = Modifier.weight(1f)
             )
         }

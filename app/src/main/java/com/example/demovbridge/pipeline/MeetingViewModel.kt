@@ -127,6 +127,11 @@ class MeetingViewModel(
                 launch {
                     bluetoothAudioManager.isBluetoothConnected.collect { active ->
                         _isBluetoothActive.value = active
+                        if (active) {
+                            bluetoothAudioManager.startSco()
+                        } else {
+                            bluetoothAudioManager.stopSco()
+                        }
                     }
                 }
 
