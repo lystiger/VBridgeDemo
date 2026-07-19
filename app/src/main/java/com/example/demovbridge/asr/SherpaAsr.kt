@@ -14,7 +14,7 @@ class SherpaAsr(
     private val decoderPath: String,
     private val joinerPath: String,
     private val tokensPath: String,
-    private val numThreads: Int = 2
+    private val numThreads: Int = 4
 ) : SpeechRecognizer {
     private var recognizer: OfflineRecognizer? = null
 
@@ -33,7 +33,8 @@ class SherpaAsr(
                         tokens = tokensPath,
                         numThreads = numThreads,
                         debug = false
-                    )
+                    ),
+                    decodingMethod = "greedy_search"
                 )
             )
         }

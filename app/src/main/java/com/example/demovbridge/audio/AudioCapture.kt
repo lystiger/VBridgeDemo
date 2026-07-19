@@ -5,6 +5,8 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -43,6 +45,18 @@ class AudioCapture(
             }
         } else null
 
+        val echoCanceler = if (AcousticEchoCanceler.isAvailable()) {
+            AcousticEchoCanceler.create(audioRecord.audioSessionId)?.apply {
+                enabled = true
+            }
+        } else null
+
+        val gainControl = if (AutomaticGainControl.isAvailable()) {
+            AutomaticGainControl.create(audioRecord.audioSessionId)?.apply {
+                enabled = true
+            }
+        } else null
+
         val buffer = ShortArray(480) // 30ms at 16kHz
         try {
             audioRecord.startRecording()
@@ -59,6 +73,8 @@ class AudioCapture(
             }
         } finally {
             noiseSuppressor?.release()
+            echoCanceler?.release()
+            gainControl?.release()
             try {
                 audioRecord.stop()
             } catch (e: Exception) {

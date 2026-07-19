@@ -7,6 +7,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.example.demovbridge.network.bluetooth.BluetoothEventCodec
 import okhttp3.*
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -55,34 +56,11 @@ class VBridgeSocket(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                try {
-                    val json = JSONObject(text)
-                    val type = json.optString("type")
-                    if (type == "translation") {
-                        val event = TranslationEvent(
-                            eventId = json.getString("eventId"),
-                            roomId = json.getString("roomId"),
-                            speakerId = json.getString("speakerId"),
-                            speakerName = json.getString("speakerName"),
-                            sourceLanguage = json.getString("sourceLanguage"),
-                            targetLanguage = json.getString("targetLanguage"),
-                            sourceText = json.getString("sourceText"),
-                            translatedText = json.getString("translatedText"),
-                            startedAt = json.getLong("startedAt"),
-                            endedAt = json.getLong("endedAt"),
-                            latencyMs = json.getLong("latencyMs"),
-                            confidence = if (json.isNull("confidence")) null else json.optDouble("confidence", Double.NaN).let { if (it.isNaN()) null else it.toFloat() }
-                        )
-                        
-                        // Validate roomId
-                        if (event.roomId == currentRoomId) {
-                            scope.launch {
-                                _events.emit(NetworkEvent.TranslationReceived(event))
-                            }
-                        }
+                val event = BluetoothEventCodec.decode(text)
+                if (event != null && event.roomId == currentRoomId) {
+                    scope.launch {
+                        _events.emit(NetworkEvent.TranslationReceived(event))
                     }
-                } catch (e: Exception) {
-                    Log.e("VBridgeSocket", "Parse error: ${e.message}")
                 }
             }
 
@@ -121,23 +99,8 @@ class VBridgeSocket(
 
     override suspend fun send(event: TranslationEvent): TransportSendResult {
         val activeSocket = socket ?: return TransportSendResult.Failure("Not connected")
-
-        val json = JSONObject().apply {
-            put("type", "translation")
-            put("eventId", event.eventId)
-            put("roomId", event.roomId)
-            put("speakerId", event.speakerId)
-            put("speakerName", event.speakerName)
-            put("sourceLanguage", event.sourceLanguage)
-            put("targetLanguage", event.targetLanguage)
-            put("sourceText", event.sourceText)
-            put("translatedText", event.translatedText)
-            put("startedAt", event.startedAt)
-            put("endedAt", event.endedAt)
-            put("latencyMs", event.latencyMs)
-            put("confidence", event.confidence ?: JSONObject.NULL)
-        }
-        val sent = activeSocket.send(json.toString())
+        val json = BluetoothEventCodec.encode(event)
+        val sent = activeSocket.send(json)
         return if (sent) TransportSendResult.Success else TransportSendResult.Failure("WebSocket send failed")
     }
 
@@ -163,27 +126,4 @@ class VBridgeSocket(
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
     }
-}
-
-data class TranslationEvent(
-    val eventId: String,
-    val roomId: String,
-    val speakerId: String,
-    val speakerName: String,
-    val sourceLanguage: String,
-    val targetLanguage: String,
-    val sourceText: String,
-    val translatedText: String,
-    val startedAt: Long,
-    val endedAt: Long,
-    val latencyMs: Long,
-    val confidence: Float?
-)
-
-sealed interface NetworkEvent {
-    object Connecting : NetworkEvent
-    object Connected : NetworkEvent
-    object Disconnected : NetworkEvent
-    data class TranslationReceived(val event: TranslationEvent) : NetworkEvent
-    data class Error(val message: String) : NetworkEvent
 }
