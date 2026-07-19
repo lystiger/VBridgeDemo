@@ -35,7 +35,7 @@ class InterpreterPipeline(
     private val localParticipantId: String,
     private val localParticipantName: String,
     private val diagnostics: PipelineDiagnostics? = null,
-    private val isOnline: StateFlow<Boolean>,
+    private val isOnline: StateFlow<Boolean> = MutableStateFlow(true),
     // Set to false to fall back to the old fixed-direction behavior (use
     // currentDirection to pick asrVi/asrEn instead of auto-detecting).
     private val autoDetectLanguage: Boolean = true,
@@ -260,17 +260,33 @@ class InterpreterPipeline(
      *
      * Good enough for a hackathon demo; not a substitute for real language ID.
      */
-    private suspend fun detectLanguageAndTranscribe(audio: PcmAudio): Pair<String, Direction> = coroutineScope {
-        val viDeferred = async { runCatching { asrVi.transcribe(audio) }.getOrDefault("") }
-        val enDeferred = async { runCatching { asrEn.transcribe(audio) }.getOrDefault("") }
+    private suspend fun detectLanguageAndTranscribe(audio: PcmAudio): Pair<String, Direction> {
+        // Sherpa recognizers own large native ONNX allocations. Running both
+        // languages concurrently caused a large first-inference memory spike
+        // on lower-memory phones and could make Android kill the process.
+        // Decode sequentially and release each native model as soon as its
+        // transcript has been captured. This trades some latency for a stable
+        // memory ceiling during offline Bluetooth conversations.
+        val viText = try {
+            asrVi.transcribe(audio)
+        } catch (_: Exception) {
+            ""
+        } finally {
+            asrVi.release()
+        }
 
-        val viText = viDeferred.await()
-        val enText = enDeferred.await()
+        val enText = try {
+            asrEn.transcribe(audio)
+        } catch (_: Exception) {
+            ""
+        } finally {
+            asrEn.release()
+        }
 
         val viScore = scoreTranscript(viText, isVietnameseModel = true)
         val enScore = scoreTranscript(enText, isVietnameseModel = false)
 
-        return@coroutineScope if (viScore >= enScore) {
+        return if (viScore >= enScore) {
             viText to Direction.ViToEn
         } else {
             enText to Direction.EnToVi

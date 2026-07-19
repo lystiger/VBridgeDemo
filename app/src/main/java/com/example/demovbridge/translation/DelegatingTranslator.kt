@@ -18,7 +18,9 @@ class DelegatingTranslator(
                 remoteTranslator.translate(text, direction)
             }.getOrElse { e ->
                 // Ghi log để theo dõi tần suất fallback khi Remote gặp lỗi[cite: 2]
-                Log.e("DelegatingTranslator", "Remote translation failed, falling back to MLKit: ${e.message}")
+                runCatching {
+                    Log.e("DelegatingTranslator", "Remote translation failed, falling back to MLKit: ${e.message}")
+                }
                 onDevice.translate(text, direction).copy(modelName = "MLKit (fallback)")
             }
         } else {

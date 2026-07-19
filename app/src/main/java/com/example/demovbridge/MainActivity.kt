@@ -36,6 +36,7 @@ import com.example.demovbridge.pipeline.MtEngine
 import com.example.demovbridge.ui.components.*
 import com.example.demovbridge.ui.conversation.VBridgeConversation
 import com.example.demovbridge.ui.theme.*
+import com.example.demovbridge.ui.components.BluetoothSettings
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -54,10 +55,23 @@ class MainActivity : ComponentActivity() {
         microphonePermissionGranted = granted
     }
 
-    private val requestBluetoothPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        bluetoothPermissionGranted = granted
+    private val requestBluetoothPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        bluetoothPermissionGranted = permissions.values.all { it }
+    }
+
+    private fun requestBluetoothPermissions() {
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        requestBluetoothPermissionsLauncher.launch(permissions)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,17 +85,22 @@ class MainActivity : ComponentActivity() {
             ) == PackageManager.PERMISSION_GRANTED
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            bluetoothPermissionGranted =
-                ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED
+            val permissions = arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
+            bluetoothPermissionGranted = permissions.all {
+                ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+            }
             
             if (!bluetoothPermissionGranted) {
-                requestBluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                requestBluetoothPermissions()
             }
         } else {
-            bluetoothPermissionGranted = true
+            bluetoothPermissionGranted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
         }
 
         setContent {
@@ -94,11 +113,13 @@ class MainActivity : ComponentActivity() {
                         SetupScreen(
                             initialName = config?.displayName ?: "",
                             initialRoom = config?.roomId ?: "test-room",
-                            onJoin = { newConfig ->
+                            onJoin = { newConfig, connectivityMode ->
                                 lifecycleScope.launch {
                                     settingsManager.saveConfig(newConfig)
                                     currentConfig = newConfig
-                                    viewModel = MeetingViewModel(applicationContext, newConfig)
+                                    viewModel = MeetingViewModel(applicationContext, newConfig).also {
+                                        it.setConnectivityMode(connectivityMode)
+                                    }
                                 }
                             }
                         )
@@ -121,6 +142,8 @@ class MainActivity : ComponentActivity() {
                                         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     },
                                     hasPermission = microphonePermissionGranted,
+                                    hasBluetoothPermission = bluetoothPermissionGranted,
+                                    onRequestBluetoothPermission = ::requestBluetoothPermissions,
                                     onBack = {
                                         vm.stopPipeline()
                                         viewModel = null
@@ -145,10 +168,11 @@ class MainActivity : ComponentActivity() {
 fun SetupScreen(
     initialName: String,
     initialRoom: String,
-    onJoin: (ParticipantConfig) -> Unit
+    onJoin: (ParticipantConfig, ConnectivityMode) -> Unit
 ) {
     var name by remember(initialName) { mutableStateOf(initialName) }
     var room by remember(initialRoom) { mutableStateOf(initialRoom) }
+    var connectivityMode by rememberSaveable { mutableStateOf(ConnectivityMode.Room) }
 
     Column(
         modifier = Modifier
@@ -171,21 +195,55 @@ fun SetupScreen(
         Spacer(modifier = Modifier.height(48.dp))
 
         GlassCard {
-            Text("Start or join a conversation", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
-            Text("Create a room and invite another device.", style = MaterialTheme.typography.bodySmall, color = TextMuted, modifier = Modifier.padding(bottom = 24.dp))
+            Text("Start a conversation", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = TextPrimary)
+            Text("Choose how this device connects.", style = MaterialTheme.typography.bodySmall, color = TextMuted, modifier = Modifier.padding(bottom = 20.dp))
+
+            SettingChoices(
+                title = "Connectivity",
+                choices = listOf("Solo", "Bluetooth", "Room"),
+                selectedIndex = when (connectivityMode) {
+                    ConnectivityMode.Solo -> 0
+                    ConnectivityMode.Bluetooth -> 1
+                    ConnectivityMode.Room -> 2
+                },
+                onSelect = {
+                    connectivityMode = when (it) {
+                        0 -> ConnectivityMode.Solo
+                        1 -> ConnectivityMode.Bluetooth
+                        else -> ConnectivityMode.Room
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(20.dp))
 
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Your Name") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
             Spacer(modifier = Modifier.height(16.dp))
-            OutlinedTextField(value = room, onValueChange = { room = it }, label = { Text("Room Code") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+            if (connectivityMode == ConnectivityMode.Room) {
+                OutlinedTextField(value = room, onValueChange = { room = it }, label = { Text("Room Code") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+            } else if (connectivityMode == ConnectivityMode.Bluetooth) {
+                Text(
+                    "Pair both phones in Android Settings first. You can host or select the other phone on the next screen.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+            }
             Spacer(modifier = Modifier.height(32.dp))
             
             VBridgeButton(
                 onClick = { 
-                    if (name.isNotBlank() && room.isNotBlank()) {
-                        onJoin(ParticipantConfig(UUID.randomUUID().toString(), name, room, "vi", "en")) 
+                    if (name.isNotBlank() && (connectivityMode != ConnectivityMode.Room || room.isNotBlank())) {
+                        val sessionId = if (connectivityMode == ConnectivityMode.Room) room else "offline"
+                        onJoin(
+                            ParticipantConfig(UUID.randomUUID().toString(), name, sessionId, "vi", "en"),
+                            connectivityMode
+                        )
                     }
                 }, 
-                text = "Join Room", 
+                text = when (connectivityMode) {
+                    ConnectivityMode.Solo -> "Start Solo"
+                    ConnectivityMode.Bluetooth -> "Match Bluetooth Device"
+                    ConnectivityMode.Room -> "Join Room"
+                },
                 primary = true
             )
         }
@@ -204,10 +262,13 @@ fun LoadingScreen() {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun MainScreen(
     viewModel: MeetingViewModel,
     onRequestMicrophonePermission: () -> Unit,
     hasPermission: Boolean,
+    hasBluetoothPermission: Boolean,
+    onRequestBluetoothPermission: () -> Unit,
     onBack: () -> Unit
 ) {
     val uiTurns by viewModel.turns.collectAsState()
@@ -231,16 +292,36 @@ fun MainScreen(
 
     val displayConnText = if (isBluetoothActive) "$connText + BT" else connText
 
+    var showBluetoothSettings by rememberSaveable {
+        mutableStateOf(connectivityMode == ConnectivityMode.Bluetooth)
+    }
+
     if (showSettings) {
         SettingsSheet(
             connectivityMode = connectivityMode,
             mtEngine = mtEngine,
             captureMode = captureMode,
-            onConnectivityModeChange = viewModel::setConnectivityMode,
+            onConnectivityModeChange = {
+                viewModel.setConnectivityMode(it)
+                if (it == ConnectivityMode.Bluetooth) {
+                    showBluetoothSettings = true
+                }
+            },
             onMtEngineChange = viewModel::setMtEngine,
             onCaptureModeChange = viewModel::setCaptureMode,
             onDismiss = { showSettings = false }
         )
+    }
+
+    if (showBluetoothSettings) {
+        ModalBottomSheet(onDismissRequest = { showBluetoothSettings = false }) {
+            BluetoothSettings(
+                btManager = viewModel.btManager,
+                hasPermission = hasBluetoothPermission,
+                onRequestPermission = onRequestBluetoothPermission,
+                onDismiss = { showBluetoothSettings = false }
+            )
+        }
     }
 
     Scaffold(
@@ -254,25 +335,31 @@ fun MainScreen(
         },
         containerColor = Color.Transparent,
         floatingActionButton = {
+            val hasCompletedTurn = uiTurns.any { it.status == com.example.demovbridge.ui.conversation.TurnStatus.Complete }
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(bottom = 16.dp)) {
                 // FR-3: Caption thay đổi theo Floor
-                when (floor) {
+                if (!hasCompletedTurn) when (floor) {
                     Floor.RemoteSpeaking -> Text("PARTNER IS SPEAKING", style = MaterialTheme.typography.labelSmall, color = TextMuted, fontWeight = FontWeight.Bold)
                     Floor.LocalSpeaking -> Text("LISTENING…", style = MaterialTheme.typography.labelSmall, color = BrightCyan, fontWeight = FontWeight.Bold)
                     Floor.Open -> Text(if (captureMode == CaptureMode.HandsOn) "HOLD TO SPEAK" else "TAP TO SPEAK", style = MaterialTheme.typography.labelSmall, color = TextMuted, fontWeight = FontWeight.Bold)
                 }
-                Spacer(modifier = Modifier.height(12.dp))
+                if (!hasCompletedTurn) Spacer(modifier = Modifier.height(12.dp))
 
                 val isActive = meetingState == MeetingState.Recording || meetingState == MeetingState.Listening
                 
                 RecordingMicFAB(
                     isRecording = isActive,
                     enabled = floor != Floor.RemoteSpeaking,
-                    onToggle = {
+                    pressAndHold = captureMode == CaptureMode.HandsOn,
+                    compact = hasCompletedTurn,
+                    onPress = {
                         if (!hasPermission) onRequestMicrophonePermission()
-                        else if (isActive) viewModel.stopRecording()
-                        else viewModel.startRecording()
-                    }
+                        else if (captureMode == CaptureMode.HandsOn) viewModel.startRecording()
+                        else if (isActive) viewModel.stopRecording() else viewModel.startRecording()
+                    },
+                    onRelease = {
+                        if (captureMode == CaptureMode.HandsOn && hasPermission) viewModel.stopRecording()
+                    },
                 )
             }
         },
@@ -314,7 +401,24 @@ private fun SettingsSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Text("Session settings", style = MaterialTheme.typography.headlineSmall)
-            SettingChoices("Connectivity", listOf("Solo", "Room"), if (connectivityMode == ConnectivityMode.Solo) 0 else 1) { onConnectivityModeChange(if (it == 0) ConnectivityMode.Solo else ConnectivityMode.Room) }
+            Text("Message time zone: GMT+7", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            SettingChoices(
+                "Connectivity", 
+                listOf("Solo", "Bluetooth", "Room"), 
+                when(connectivityMode) {
+                    ConnectivityMode.Solo -> 0
+                    ConnectivityMode.Bluetooth -> 1
+                    ConnectivityMode.Room -> 2
+                }
+            ) { 
+                onConnectivityModeChange(
+                    when(it) {
+                        0 -> ConnectivityMode.Solo
+                        1 -> ConnectivityMode.Bluetooth
+                        else -> ConnectivityMode.Room
+                    }
+                ) 
+            }
             SettingChoices("Translation engine", listOf("On-device", "Remote"), if (mtEngine == MtEngine.OnDevice) 0 else 1) { onMtEngineChange(if (it == 0) MtEngine.OnDevice else MtEngine.Remote) }
             SettingChoices("Capture", listOf("Hands-on", "Hands-free"), if (captureMode == CaptureMode.HandsOn) 0 else 1) { onCaptureModeChange(if (it == 0) CaptureMode.HandsOn else CaptureMode.HandsFree) }
         }

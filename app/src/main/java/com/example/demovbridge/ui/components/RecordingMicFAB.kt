@@ -3,7 +3,6 @@ package com.example.demovbridge.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,13 +18,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 
 @Composable
 fun RecordingMicFAB(
     isRecording: Boolean,
     enabled: Boolean,
-    onToggle: () -> Unit,
+    pressAndHold: Boolean,
+    compact: Boolean = false,
+    onPress: () -> Unit,
+    onRelease: () -> Unit,
 ) {
+    val buttonSize = if (compact) 48.dp else 72.dp
+    val iconSize = if (compact) 22.dp else 32.dp
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     
     // Continuous pulse effect for the background ring
@@ -76,7 +82,7 @@ fun RecordingMicFAB(
         if (isRecording) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(buttonSize)
                     .scale(pulseScale)
                     .background(containerColor.copy(alpha = pulseAlpha), CircleShape)
             )
@@ -84,10 +90,21 @@ fun RecordingMicFAB(
 
         Surface(
             modifier = Modifier
-                .size(72.dp)
+                .size(buttonSize)
                 .scale(if (isRecording) breathingScale else 1.0f)
                 .clip(CircleShape)
-                .clickable(enabled = enabled) { onToggle() },
+                .pointerInput(enabled, pressAndHold) {
+                    detectTapGestures(
+                        onPress = {
+                            if (!enabled) return@detectTapGestures
+                            onPress()
+                            if (pressAndHold) {
+                                tryAwaitRelease()
+                                onRelease()
+                            }
+                        }
+                    )
+                },
             color = containerColor,
             shape = CircleShape,
             shadowElevation = if (isRecording) 12.dp else 4.dp
@@ -97,7 +114,7 @@ fun RecordingMicFAB(
                     imageVector = Icons.Default.Mic,
                     contentDescription = if (isRecording) "Stop" else "Start",
                     tint = Color.White,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(iconSize)
                 )
             }
         }

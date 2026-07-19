@@ -1,5 +1,6 @@
 package com.example.demovbridge.pipeline
 
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,14 +12,16 @@ import com.example.demovbridge.translation.DelegatingTranslator
 import com.example.demovbridge.translation.LanServerTranslator
 import com.example.demovbridge.net.LanFallbackClient
 import com.example.demovbridge.BuildConfig
-import com.example.demovbridge.tts.SherpaTts
+import com.example.demovbridge.tts.AndroidTtsSynthesizer
 import com.example.demovbridge.network.NetworkEvent
 import com.example.demovbridge.network.VBridgeSocket
+import com.example.demovbridge.network.DelegatingTranslationTransport
+import com.example.demovbridge.network.bluetooth.BluetoothConnectionManager
+import com.example.demovbridge.network.bluetooth.BluetoothTranslationTransport
 import com.example.demovbridge.data.ParticipantConfig
 import com.example.demovbridge.ui.conversation.ConversationTurn
 import com.example.demovbridge.ui.conversation.TurnDirection
 import com.example.demovbridge.ui.conversation.TurnStatus
-import com.example.demovbridge.utils.ResourceUtils
 import com.example.demovbridge.vad.SherpaVad
 import com.example.demovbridge.network.ConnectivityMonitor
 import com.example.demovbridge.audio.BluetoothAudioManager
@@ -27,7 +30,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 sealed interface MeetingState {
     data object Idle : MeetingState
@@ -40,7 +42,7 @@ sealed interface MeetingState {
     data class Error(val message: String) : MeetingState
 }
 
-enum class ConnectivityMode { Solo, Room }
+enum class ConnectivityMode { Solo, Bluetooth, Room }
 enum class MtEngine { OnDevice, Remote }
 enum class Floor { Open, LocalSpeaking, RemoteSpeaking }
 enum class CaptureMode { HandsOn, HandsFree }
@@ -53,7 +55,13 @@ class MeetingViewModel(
     private var pipeline: InterpreterPipeline? = null
     private var translator: com.example.demovbridge.translation.Translator? = null
     private var switchableTranslator: DelegatingTranslator? = null
-    private val network = VBridgeSocket()
+    private val roomTransport = VBridgeSocket()
+    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    val btManager = BluetoothConnectionManager(bluetoothManager.adapter)
+    private val btTransport = BluetoothTranslationTransport(btManager)
+    private val soloTransport = NoOpTransport()
+    private val delegatingTransport = DelegatingTranslationTransport()
+    
     private val connectivityMonitor = ConnectivityMonitor(context)
     private val bluetoothAudioManager = BluetoothAudioManager(context)
     private val glossary = Glossary()
@@ -113,7 +121,7 @@ class MeetingViewModel(
                 }
 
                 launch {
-                    network.events.collect { _connectionState.value = it }
+                    delegatingTransport.events.collect { _connectionState.value = it }
                 }
 
                 launch {
@@ -147,10 +155,7 @@ class MeetingViewModel(
     }
 
     private fun initializePipeline() {
-        // Cập nhật: Chỉ kết nối mạng nếu đang ở chế độ Room[cite: 2]
-        if (_mode.value == ConnectivityMode.Room) {
-            network.connect(config.roomId)
-        }
+        updateTransport()
 
         val capture = AudioCapture()
         val vad = SherpaVad(assets, "vad/silero_vad.onnx").apply {
@@ -182,30 +187,13 @@ class MeetingViewModel(
         switchableTranslator = delegatingTranslator
         this.translator = delegatingTranslator
 
-        val ttsEnDir = File(context.filesDir, "tts-en")
-        ResourceUtils.copyAssetsDir(context, "tts-en/espeak-ng-data", File(ttsEnDir, "espeak-ng-data"))
-
-        val ttsViDir = File(context.filesDir, "tts-vi")
-        ResourceUtils.copyAssetsDir(context, "tts-vi/espeak-ng-data", File(ttsViDir, "espeak-ng-data"))
-
-        val ttsEn = SherpaTts(
-            assets,
-            modelPath = "tts-en/vits.onnx",
-            tokensPath = "tts-en/tokens.txt",
-            dataDir = File(ttsEnDir, "espeak-ng-data").absolutePath
-        )
-
-        val ttsVi = SherpaTts(
-            assets,
-            modelPath = "tts-vi/vits.onnx",
-            tokensPath = "tts-vi/tokens.txt",
-            dataDir = File(ttsViDir, "espeak-ng-data").absolutePath
-        )
+        val ttsEn = AndroidTtsSynthesizer(context, java.util.Locale.ENGLISH)
+        val ttsVi = AndroidTtsSynthesizer(context, java.util.Locale("vi", "VN"))
 
         val playback = AudioPlayback()
 
         pipeline = InterpreterPipeline(
-            capture, vad, asrVi, asrEn, delegatingTranslator, ttsVi, ttsEn, playback, network,
+            capture, vad, asrVi, asrEn, delegatingTranslator, ttsVi, ttsEn, playback, delegatingTransport,
             glossary = glossary,
             roomId = config.roomId,
             localParticipantId = config.participantId,
@@ -326,7 +314,7 @@ class MeetingViewModel(
 
     fun stopPipeline() {
         pipeline?.stop()
-        network.disconnect()
+        delegatingTransport.disconnect()
     }
 
     fun toggleDirection() {
@@ -336,11 +324,27 @@ class MeetingViewModel(
     }
 
     fun setConnectivityMode(newMode: ConnectivityMode) {
-        when (newMode) {
-            ConnectivityMode.Solo -> network.disconnect()
-            ConnectivityMode.Room -> network.connect(config.roomId)
-        }
         _mode.value = newMode
+        updateTransport()
+    }
+
+    private fun updateTransport() {
+        val transport = when (_mode.value) {
+            ConnectivityMode.Solo -> soloTransport
+            ConnectivityMode.Bluetooth -> btTransport
+            ConnectivityMode.Room -> roomTransport
+        }
+        delegatingTransport.setTransport(transport)
+
+        if (_mode.value == ConnectivityMode.Room) {
+            roomTransport.connect(config.roomId)
+        } else {
+            roomTransport.disconnect()
+        }
+        
+        if (_mode.value != ConnectivityMode.Bluetooth) {
+            btManager.stop()
+        }
     }
 
     fun setMtEngine(engine: MtEngine) {
@@ -362,7 +366,9 @@ class MeetingViewModel(
         pipeline?.stop()
         translator?.close()
         bluetoothAudioManager.release()
-        network.destroy()
+        delegatingTransport.destroy()
+        roomTransport.destroy()
+        btManager.destroy()
         diagnostics.stop()
     }
 }

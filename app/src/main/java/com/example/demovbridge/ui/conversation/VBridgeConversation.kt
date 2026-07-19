@@ -46,7 +46,8 @@ data class ConversationTurn(
     val translatedText: String,
     val status: TurnStatus,
     val errorMessage: String? = null,
-    val latencyMs: Long? = null
+    val latencyMs: Long? = null,
+    val occurredAtEpochMs: Long = System.currentTimeMillis()
 )
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ fun VBridgeConversation(
         contentPadding = PaddingValues(bottom = 120.dp, top = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        items(turns, key = { it.id }) { turn ->
+        items(turns.sortedBy { it.occurredAtEpochMs }, key = { it.id }) { turn ->
             TranslationTurnCard(
                 turn = turn,
                 onRetry = onRetry,
@@ -170,6 +171,16 @@ private fun TranslationTurnCard(
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondary,
                             fontWeight = FontWeight.Bold
+                        )
+
+                        Text(
+                            text = remember(turn.occurredAtEpochMs) {
+                                java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).apply {
+                                    timeZone = java.util.TimeZone.getTimeZone("GMT+07:00")
+                                }.format(java.util.Date(turn.occurredAtEpochMs))
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted
                         )
                     }
 
